@@ -207,6 +207,73 @@ func TestBatchWriter_WriteFnPanic(t *testing.T) {
 	}
 }
 
+// 验证 unbuffered channel 在高并发下确实能批量收集
+func TestBatchWriter_BatchSizeAccuracy(t *testing.T) {
+	const n = 100
+	const size = 100
+
+	var maxBatchSize atomic.Int32
+	ready := make(chan struct{})
+	bw := New(size, func(seq iter.Seq[int]) error {
+		var count int32
+		for range seq {
+			count++
+		}
+		for {
+			old := maxBatchSize.Load()
+			if count <= old || maxBatchSize.CompareAndSwap(old, count) {
+				break
+			}
+		}
+		return nil
+	})
+	defer bw.Close()
+
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := range n {
+		go func(v int) {
+			defer wg.Done()
+			<-ready
+			bw.Write(v)
+		}(i)
+	}
+	close(ready) // 同时放行所有 goroutine
+	wg.Wait()
+
+	if got := maxBatchSize.Load(); got < 10 {
+		t.Fatalf("max batch size too small: %d, unbuffered drain not working", got)
+	}
+	t.Logf("max batch size: %d / %d", maxBatchSize.Load(), n)
+}
+
+// 验证 Close→Start 快速切换不会导致数据被旧 goroutine 抢走
+func TestBatchWriter_RestartNoDataStealing(t *testing.T) {
+	for range 100 { // 重复跑增加触发概率
+		var count atomic.Int32
+		bw := New(10, func(seq iter.Seq[int]) error {
+			for range seq {
+				count.Add(1)
+			}
+			return nil
+		})
+
+		bw.Write(1)
+		bw.Close()
+
+		bw.Start()
+		err := bw.Write(2) // 这条不应被旧 run() 抢走返回 ErrClosed
+		if err != nil {
+			t.Fatalf("expected nil error after restart, got: %v", err)
+		}
+		bw.Close()
+
+		if got := count.Load(); got != 2 {
+			t.Fatalf("expected 2 writes, got %d (data stolen by old goroutine?)", got)
+		}
+	}
+}
+
 // 重复 Start 不开启多余 goroutine
 func TestBatchWriter_MultipleStart(t *testing.T) {
 	var count atomic.Int32

@@ -20,7 +20,7 @@ type BatchWriter[T any] struct {
 	writeFn func(iter.Seq[T]) error
 
 	mu      sync.Mutex
-	ch      chan entry[T] // 创建一次，永久复用；unbuffered
+	ch      chan entry[T] // 每次 Start 新建，物理隔离新旧生命周期
 	done    Done
 	running bool
 
@@ -28,11 +28,7 @@ type BatchWriter[T any] struct {
 }
 
 func New[T any](size int, writeFn func(iter.Seq[T]) error) *BatchWriter[T] {
-	bw := &BatchWriter[T]{
-		size:    size,
-		writeFn: writeFn,
-		ch:      make(chan entry[T]),
-	}
+	bw := &BatchWriter[T]{size: size, writeFn: writeFn}
 	bw.Start()
 	return bw
 }
@@ -44,6 +40,7 @@ func (bw *BatchWriter[T]) Start() {
 	if bw.running {
 		return
 	}
+	bw.ch = make(chan entry[T]) // 新 channel 隔离新旧生命周期
 	bw.running = true
 	bw.done.Reset()
 	bw.wg.Go(func() {
@@ -71,6 +68,7 @@ func (bw *BatchWriter[T]) Close() {
 func (bw *BatchWriter[T]) Write(data T) error {
 	bw.mu.Lock()
 	running := bw.running
+	ch := bw.ch // 在锁内捕获当前周期的 channel
 	done := bw.done.C()
 	bw.mu.Unlock()
 
@@ -80,7 +78,7 @@ func (bw *BatchWriter[T]) Write(data T) error {
 
 	resp := make(chan error, 1)
 	select {
-	case bw.ch <- entry[T]{data, resp}: // unbuffered：与 run() 直接交会
+	case ch <- entry[T]{data, resp}: // 发往当前周期的 channel
 		return <-resp
 	case <-done:
 		return ErrClosed
