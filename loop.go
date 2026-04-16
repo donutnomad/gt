@@ -34,6 +34,12 @@ func Loop(ctx context.Context, backoff time.Duration, fn func(ctx context.Contex
 	}
 }
 
+func LoopFn(ctx context.Context, backoff time.Duration, fn func(ctx context.Context) error) func() {
+	return func() {
+		Loop(ctx, backoff, fn)
+	}
+}
+
 func runOnce(ctx context.Context, fn func(ctx context.Context) error) {
 	defer func() {
 		if r := recover(); r != nil {
