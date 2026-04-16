@@ -5,6 +5,14 @@ import (
 	"time"
 )
 
+type DD struct {
+	d Done
+}
+
+func ddd1(d *DD) {
+	d.d
+}
+
 func TestDone_BlocksBeforeClose(t *testing.T) {
 	d := NewDone()
 	select {

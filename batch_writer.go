@@ -9,6 +9,7 @@ import (
 )
 
 var ErrClosed = errors.New("batch writer closed")
+var ErrPartialConsume = errors.New("batch writer: writeFn did not consume the entire batch")
 
 type entry[T any] struct {
 	data T
@@ -24,7 +25,7 @@ type BatchWriter[T any] struct {
 	done    Done
 	running bool
 
-	wg sync.WaitGroup // 追踪 run() goroutine
+	wg *sync.WaitGroup // 指针，每次 Start 换代，避免并发 Close+Start 时 Add/Wait 竞争
 }
 
 func New[T any](size int, writeFn func(iter.Seq[T]) error) *BatchWriter[T] {
@@ -43,6 +44,7 @@ func (bw *BatchWriter[T]) Start() {
 	bw.ch = make(chan entry[T]) // 新 channel 隔离新旧生命周期
 	bw.running = true
 	bw.done.Reset()
+	bw.wg = new(sync.WaitGroup) // 新 WaitGroup 隔离新旧生命周期
 	bw.wg.Go(func() {
 		bw.run(bw.ch, bw.done.C())
 	})
@@ -52,15 +54,20 @@ func (bw *BatchWriter[T]) Start() {
 // 可重复调用，幂等。
 func (bw *BatchWriter[T]) Close() {
 	bw.mu.Lock()
+	wg := bw.wg // 在锁内捕获当前代的 WaitGroup
 	if !bw.running {
 		bw.mu.Unlock()
+		// 重复调用也要等当前代的 run() 彻底退出
+		if wg != nil {
+			wg.Wait()
+		}
 		return
 	}
 	bw.running = false
 	bw.done.Close()
 	bw.mu.Unlock()
 
-	bw.wg.Wait()
+	wg.Wait()
 }
 
 // Write 提交数据，阻塞直到所在批次写入完成。
@@ -92,13 +99,26 @@ func (bw *BatchWriter[T]) safeWrite(batch []entry[T]) (err error) {
 			err = fmt.Errorf("batch writer: writeFn panic: %v\n%s", r, debug.Stack())
 		}
 	}()
-	return bw.writeFn(func(yield func(T) bool) {
+	consumedCount := 0 // 记录被成功拿走的数据量
+
+	err = bw.writeFn(func(yield func(T) bool) {
 		for _, e := range batch {
+			// 1. 严格遵守契约：消费者说停，必须立刻 return 停下
 			if !yield(e.data) {
 				return
 			}
+			consumedCount++ // 记录进度
 		}
 	})
+
+	// 2. 防御性拦截：如果没报错，但数据没消费完
+	if err == nil && consumedCount < len(batch) {
+		// 这说明 writeFn 提前 break 了，且没有尽责地返回 error。
+		// 我们必须主动抛出错误，否则后面未消费的 entry 会误收到 nil (成功)。
+		return ErrPartialConsume
+	}
+
+	return err
 }
 
 func (bw *BatchWriter[T]) run(ch chan entry[T], done <-chan struct{}) {
