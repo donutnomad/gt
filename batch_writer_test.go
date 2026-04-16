@@ -213,8 +213,15 @@ func TestBatchWriter_BatchSizeAccuracy(t *testing.T) {
 	const size = 100
 
 	var maxBatchSize atomic.Int32
-	ready := make(chan struct{})
+	// gate 阻塞首批 writeFn 调用，让后续 writers 在 ch 上堆积，
+	// 避免依赖 OS 调度"恰好让 writers 同时阻塞在 send"这种竞态。
+	gate := make(chan struct{})
+	var firstCall atomic.Bool
+
 	bw := New(size, func(seq iter.Seq[int]) error {
+		if firstCall.CompareAndSwap(false, true) {
+			<-gate
+		}
 		var count int32
 		for range seq {
 			count++
@@ -234,11 +241,14 @@ func TestBatchWriter_BatchSizeAccuracy(t *testing.T) {
 	for i := range n {
 		go func(v int) {
 			defer wg.Done()
-			<-ready
 			bw.Write(v)
 		}(i)
 	}
-	close(ready) // 同时放行所有 goroutine
+
+	// 等待 writers 堆积到 ch 上（首批进 writeFn 后被 gate 挡住）
+	time.Sleep(50 * time.Millisecond)
+	// 放行后，run() 处理完首批会循环回去 drain 出一个大批量，验证 drain 生效
+	close(gate)
 	wg.Wait()
 
 	if got := maxBatchSize.Load(); got < 10 {
