@@ -43,12 +43,12 @@ func LoopFn(backoff time.Duration, fn func(ctx context.Context) error) func(ctx 
 func runOnce(ctx context.Context, fn func(ctx context.Context) error) {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Error("[gt] loop: panic, restarting", "panic", r, "stack", string(debug.Stack()))
+			slog.ErrorContext(ctx, "[gt] loop: panic, restarting", "panic", r, "stack", string(debug.Stack()))
 		}
 	}()
 	// 按错误源头过滤：只屏蔽由 ctx 取消引发的标准错误，不依赖 ctx.Err() 的时间窗口
 	// —— 避免 fn 返回真实业务错误的同一瞬间外部 cancel 时日志被静默吞掉。
 	if err := fn(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
-		slog.Error("[gt] loop: error, restarting", "err", err)
+		slog.ErrorContext(ctx, "[gt] loop: error, restarting", "err", err)
 	}
 }

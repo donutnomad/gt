@@ -60,7 +60,7 @@ func (lc *Lifecycle) Go(fn func(ctx context.Context)) {
 		defer wg.Done()
 		defer func() {
 			if r := recover(); r != nil {
-				slog.Error("[gt] lifecycle: goroutine panic", "panic", r, "stack", string(debug.Stack()))
+				slog.ErrorContext(ctx, "[gt] lifecycle: goroutine panic", "panic", r, "stack", string(debug.Stack()))
 			}
 		}()
 		fn(ctx)

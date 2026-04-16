@@ -48,7 +48,7 @@ func WaitAll(ctx context.Context, fns ...func(ctx context.Context)) {
 		wg.Go(func() {
 			defer func() {
 				if r := recover(); r != nil {
-					slog.Error("[gt] waitall: goroutine panic", "panic", r, "stack", string(debug.Stack()))
+					slog.ErrorContext(ctx, "[gt] waitall: goroutine panic", "panic", r, "stack", string(debug.Stack()))
 				}
 			}()
 			fn(ctx)
