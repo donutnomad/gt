@@ -17,7 +17,7 @@ const minLoopBackoff = 100 * time.Millisecond
 type TickOptions struct {
 	Stop     bool
 	Interval time.Duration // >0 时替换当前 interval，重建 ticker
-	Delay    time.Duration // >0 时下次执行前额外等待
+	Delay    time.Duration // >0 时覆盖 delayCall，每次调用 f 前等待此时长
 }
 
 // TickFunc 返回 *TickOptions；nil 表示继续，不修改任何参数。
@@ -63,13 +63,15 @@ func LoopFn(backoff time.Duration, fn func(ctx context.Context) error) func(ctx 
 
 // TickRun 定时触发，ctx cancel和panic后返回错误 并 停止运行
 // interval<=0 时设置为 minLoopBackoff。
-func TickRun(ctx context.Context, mode TimerMode, interval time.Duration, f TickFunc, delayRun ...time.Duration) error {
-	return runLoop(ctx, mode, interval, firstDuration(delayRun), f, mode == TICK_NOW || mode == CRON_NOW, false)
+// delayCall：每次调用 f 前等待的时长；initialDelay：仅首次调用前等待（0 表示不等）。
+func TickRun(ctx context.Context, mode TimerMode, interval time.Duration, f TickFunc, delayCall time.Duration, initialDelay time.Duration) error {
+	return runLoop(ctx, mode, interval, delayCall, initialDelay, f, mode == TICK_NOW || mode == CRON_NOW, false)
 }
 
 // LoopRun 守护定时触发，仅ctx cancel会停止
-func LoopRun(ctx context.Context, mode TimerMode, interval time.Duration, f func(ctx context.Context), delayRun ...time.Duration) {
-	_ = runLoop(ctx, mode, interval, firstDuration(delayRun), func(ctx context.Context) *TickOptions {
+// delayCall：每次调用 f 前等待的时长；initialDelay：仅首次调用前等待（0 表示不等）。
+func LoopRun(ctx context.Context, mode TimerMode, interval time.Duration, f func(ctx context.Context), delayCall time.Duration, initialDelay time.Duration) {
+	_ = runLoop(ctx, mode, interval, delayCall, initialDelay, func(ctx context.Context) *TickOptions {
 		f(ctx)
 		return nil
 	}, mode == TICK_NOW || mode == CRON_NOW, true)
@@ -97,8 +99,8 @@ func newTickerChan(mode TimerMode, interval time.Duration) (ch <-chan time.Time,
 	return t.C, t.Stop
 }
 
-func runLoop(ctx context.Context, mode TimerMode, interval, delay time.Duration, f TickFunc, immediately, guard bool) error {
-	// call 调用 f 一次，先等待 delay 再执行。
+func runLoop(ctx context.Context, mode TimerMode, interval, delay, initialDelay time.Duration, f TickFunc, immediately, guard bool) error {
+	// call 调用 f 一次，每次调用前先等待 d（即 delayCall 或 opts.Delay 覆盖值）。
 	// 返回 opts!=nil 时按 opts 调整后续行为，err!=nil 表示需将错误向上返回。
 	call := func(d time.Duration) (opts *TickOptions, err error) {
 		if d > 0 {
@@ -118,8 +120,7 @@ func runLoop(ctx context.Context, mode TimerMode, interval, delay time.Duration,
 	}
 
 	if immediately {
-		// 立即执行不等待 delay，delay 只在 ticker 触发后生效
-		opts, err := call(0)
+		opts, err := call(initialDelay)
 		if err != nil {
 			return err
 		}
@@ -128,7 +129,7 @@ func runLoop(ctx context.Context, mode TimerMode, interval, delay time.Duration,
 				return nil
 			}
 			if opts.Interval > 0 {
-				interval = opts.Interval
+				interval = max(minLoopBackoff, opts.Interval)
 			}
 			if opts.Delay > 0 {
 				delay = opts.Delay
@@ -154,10 +155,13 @@ func runLoop(ctx context.Context, mode TimerMode, interval, delay time.Duration,
 					stopTicker()
 					return nil
 				}
-				if opts.Interval > 0 && opts.Interval != interval {
-					stopTicker()
-					interval = opts.Interval
-					ch, stopTicker = newTickerChan(mode, interval)
+				if opts.Interval > 0 {
+					newInterval := max(minLoopBackoff, opts.Interval)
+					if newInterval != interval {
+						stopTicker()
+						interval = newInterval
+						ch, stopTicker = newTickerChan(mode, interval)
+					}
 				}
 				if opts.Delay > 0 {
 					delay = opts.Delay
@@ -178,11 +182,4 @@ func runOnce(ctx context.Context, fn func(ctx context.Context) error) {
 	if err := fn(ctx); err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded) {
 		slog.ErrorContext(ctx, "[gt] loop: error, restarting", "err", err)
 	}
-}
-
-func firstDuration(s []time.Duration) time.Duration {
-	if len(s) > 0 {
-		return s[0]
-	}
-	return 0
 }
