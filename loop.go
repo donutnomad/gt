@@ -85,13 +85,13 @@ func LoopFn(backoff time.Duration, fn func(ctx context.Context) error) func(ctx 
 // TickRun 定时触发，ctx cancel和panic后返回错误 并 停止运行
 // interval<=0 时设置为 minLoopBackoff。
 // delayCall：每次调用 f 前等待的时长；initialDelay：仅首次调用前等待（0 表示不等）。
-func TickRun(ctx context.Context, mode TimerMode, interval time.Duration, f TickFunc, delayCall time.Duration, initialDelay time.Duration) error {
+func TickRun(ctx context.Context, mode TimerMode, interval, delayCall, initialDelay time.Duration, f TickFunc) error {
 	return runLoop(ctx, mode, interval, delayCall, initialDelay, f, mode == TICK_NOW || mode == CRON_NOW, false)
 }
 
 // LoopRun 守护定时触发，仅ctx cancel会停止
 // delayCall：每次调用 f 前等待的时长；initialDelay：仅首次调用前等待（0 表示不等）。
-func LoopRun(ctx context.Context, mode TimerMode, interval time.Duration, f func(ctx context.Context), delayCall time.Duration, initialDelay time.Duration) {
+func LoopRun(ctx context.Context, mode TimerMode, interval, delayCall, initialDelay time.Duration, f func(ctx context.Context)) {
 	_ = runLoop(ctx, mode, interval, delayCall, initialDelay, func(ctx context.Context) *TickOptions {
 		f(ctx)
 		return nil

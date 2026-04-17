@@ -163,10 +163,10 @@ func TestTickRun_RunsImmediatelyThenAtInterval(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRun(ctx, TICK_NOW, 50*time.Millisecond, func(ctx context.Context) *TickOptions {
+	err := TickRun(ctx, TICK_NOW, 50*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions {
 		runs.Add(1)
 		return nil
-	}, 0, 0)
+	})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded, got %v", err)
 	}
@@ -180,7 +180,7 @@ func TestTickRun_ExitsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- TickRun(ctx, TICK_NOW, 10*time.Millisecond, func(ctx context.Context) *TickOptions { return nil }, 0, 0)
+		done <- TickRun(ctx, TICK_NOW, 10*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions { return nil })
 	}()
 	time.Sleep(30 * time.Millisecond)
 	cancel()
@@ -204,10 +204,10 @@ func TestTickRun_ZeroIntervalDoesNotPanic(t *testing.T) {
 			t.Fatalf("tickRun panicked on zero interval: %v", r)
 		}
 	}()
-	_ = TickRun(ctx, TICK_NOW, 0, func(ctx context.Context) *TickOptions {
+	_ = TickRun(ctx, TICK_NOW, 0, 0, 0, func(ctx context.Context) *TickOptions {
 		runs.Add(1)
 		return nil
-	}, 0, 0)
+	})
 	// 兜底到 minLoopBackoff=100ms：250ms 内 <= ~5 次。
 	if n := runs.Load(); n > 10 {
 		t.Fatalf("hot loop suspected: %d runs in 250ms", n)
@@ -223,10 +223,10 @@ func TestCronRun_RunsImmediatelyThenAligned(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRun(ctx, CRON_NOW, 100*time.Millisecond, func(ctx context.Context) *TickOptions {
+	err := TickRun(ctx, CRON_NOW, 100*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions {
 		runs.Add(1)
 		return nil
-	}, 0, 0)
+	})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded, got %v", err)
 	}
@@ -239,7 +239,7 @@ func TestCronRun_ExitsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- TickRun(ctx, CRON_NOW, 50*time.Millisecond, func(ctx context.Context) *TickOptions { return nil }, 0, 0)
+		done <- TickRun(ctx, CRON_NOW, 50*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions { return nil })
 	}()
 	time.Sleep(30 * time.Millisecond)
 	cancel()
@@ -262,10 +262,10 @@ func TestCronRun_DelayCallApplied(t *testing.T) {
 	defer cancel()
 	var runs atomic.Int32
 	start := time.Now()
-	_ = TickRun(ctx, CRON_NOW, 100*time.Millisecond, func(ctx context.Context) *TickOptions {
+	_ = TickRun(ctx, CRON_NOW, 100*time.Millisecond, 50*time.Millisecond, 0, func(ctx context.Context) *TickOptions {
 		runs.Add(1)
 		return nil
-	}, 50*time.Millisecond, 0)
+	})
 	elapsed := time.Since(start)
 	n := runs.Load()
 	// 至少执行了2次（1次立即 + 至少1次带delayCall的tick）
@@ -284,12 +284,12 @@ func TestTickRun_InitialDelayApplied(t *testing.T) {
 	defer cancel()
 	var runs atomic.Int32
 	start := time.Now()
-	_ = TickRun(ctx, TICK_NOW, 50*time.Millisecond, func(ctx context.Context) *TickOptions {
+	_ = TickRun(ctx, TICK_NOW, 50*time.Millisecond, 0, 100*time.Millisecond, func(ctx context.Context) *TickOptions {
 		if runs.Add(1) >= 2 {
 			return &TickOptions{Stop: true}
 		}
 		return nil
-	}, 0, 100*time.Millisecond)
+	})
 	elapsed := time.Since(start)
 	// 首次等 100ms，第二次由 ticker 触发（50ms），共约 150ms
 	if elapsed < 100*time.Millisecond {
@@ -305,10 +305,10 @@ func TestCronRun_ZeroIntervalNoHotLoop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	_ = TickRun(ctx, CRON_NOW, 0, func(ctx context.Context) *TickOptions {
+	_ = TickRun(ctx, CRON_NOW, 0, 0, 0, func(ctx context.Context) *TickOptions {
 		runs.Add(1)
 		return nil
-	}, 0, 0)
+	})
 	if n := runs.Load(); n > 20 {
 		t.Fatalf("hot loop detected: %d runs in 250ms with interval=0", n)
 	}
@@ -320,10 +320,10 @@ func TestTickRunLater_DoesNotRunImmediately(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	_ = TickRun(ctx, TICK, 200*time.Millisecond, func(ctx context.Context) *TickOptions {
+	_ = TickRun(ctx, TICK, 200*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions {
 		runs.Add(1)
 		return nil
-	}, 0, 0)
+	})
 	// 50ms 内没到第一次 tick（200ms），应为 0。
 	if n := runs.Load(); n != 0 {
 		t.Fatalf("expected 0 runs before first tick, got %d", n)
@@ -334,10 +334,10 @@ func TestTickRunLater_RunsOnTick(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRun(ctx, TICK, 50*time.Millisecond, func(ctx context.Context) *TickOptions {
+	err := TickRun(ctx, TICK, 50*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions {
 		runs.Add(1)
 		return nil
-	}, 0, 0)
+	})
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded, got %v", err)
 	}
@@ -352,10 +352,10 @@ func TestCronRunLater_DoesNotRunImmediately(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	_ = TickRun(ctx, CRON, time.Second, func(ctx context.Context) *TickOptions {
+	_ = TickRun(ctx, CRON, time.Second, 0, 0, func(ctx context.Context) *TickOptions {
 		runs.Add(1)
 		return nil
-	}, 0, 0)
+	})
 	if n := runs.Load(); n != 0 {
 		t.Fatalf("expected 0 runs before first aligned tick, got %d", n)
 	}
@@ -365,10 +365,10 @@ func TestCronRunLater_RunsOnAlignedTick(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	_ = TickRun(ctx, CRON, 100*time.Millisecond, func(ctx context.Context) *TickOptions {
+	_ = TickRun(ctx, CRON, 100*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions {
 		runs.Add(1)
 		return nil
-	}, 0, 0)
+	})
 	if n := runs.Load(); n < 1 {
 		t.Fatalf("expected at least 1 aligned run in 350ms, got %d", n)
 	}
@@ -381,10 +381,10 @@ func TestTickRun_StopsWhenFReturnsTrueImmediately(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRun(ctx, TICK_NOW, time.Hour, func(ctx context.Context) *TickOptions {
+	err := TickRun(ctx, TICK_NOW, time.Hour, 0, 0, func(ctx context.Context) *TickOptions {
 		runs.Add(1)
 		return &TickOptions{Stop: true}
-	}, 0, 0)
+	})
 	if err != nil {
 		t.Fatalf("expected nil err on stop, got %v", err)
 	}
@@ -397,12 +397,12 @@ func TestTickRun_StopsWhenFReturnsTrueOnTick(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRun(ctx, TICK_NOW, 10*time.Millisecond, func(ctx context.Context) *TickOptions {
+	err := TickRun(ctx, TICK_NOW, 10*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions {
 		if runs.Add(1) >= 3 {
 			return &TickOptions{Stop: true}
 		}
 		return nil
-	}, 0, 0)
+	})
 	if err != nil {
 		t.Fatalf("expected nil err on stop, got %v", err)
 	}
@@ -416,10 +416,10 @@ func TestTickRun_PanicReturnedAsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRun(ctx, TICK_NOW, 30*time.Millisecond, func(ctx context.Context) *TickOptions {
+	err := TickRun(ctx, TICK_NOW, 30*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions {
 		runs.Add(1)
 		panic("boom")
-	}, 0, 0)
+	})
 	if err == nil {
 		t.Fatal("expected panic error, got nil")
 	}
@@ -435,12 +435,12 @@ func TestTickRunLater_PanicOnTickReturnedAsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRun(ctx, TICK, 30*time.Millisecond, func(ctx context.Context) *TickOptions {
+	err := TickRun(ctx, TICK, 30*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions {
 		if runs.Add(1) >= 2 {
 			panic("boom-later")
 		}
 		return nil
-	}, 0, 0)
+	})
 	if err == nil || !strings.Contains(err.Error(), "boom-later") {
 		t.Fatalf("expected panic error, got %v", err)
 	}
@@ -450,12 +450,12 @@ func TestCronRun_StopsWhenFReturnsTrue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRun(ctx, CRON_NOW, 50*time.Millisecond, func(ctx context.Context) *TickOptions {
+	err := TickRun(ctx, CRON_NOW, 50*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions {
 		if runs.Add(1) >= 2 {
 			return &TickOptions{Stop: true}
 		}
 		return nil
-	}, 0, 0)
+	})
 	if err != nil {
 		t.Fatalf("expected nil err on stop, got %v", err)
 	}
@@ -468,10 +468,10 @@ func TestCronRun_PanicReturnedAsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRun(ctx, CRON_NOW, 100*time.Millisecond, func(ctx context.Context) *TickOptions {
+	err := TickRun(ctx, CRON_NOW, 100*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions {
 		runs.Add(1)
 		panic("boom-cron")
-	}, 0, 0)
+	})
 	if err == nil || !strings.Contains(err.Error(), "boom-cron") {
 		t.Fatalf("expected panic error, got %v", err)
 	}
@@ -491,7 +491,7 @@ func TestSetNow_UsedByCronLoop(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_ = TickRun(ctx, CRON_NOW, 50*time.Millisecond, func(ctx context.Context) *TickOptions { return nil }, 0, 0)
+	_ = TickRun(ctx, CRON_NOW, 50*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions { return nil })
 	if hits.Load() < 1 {
 		t.Fatal("custom now func was not invoked by cron loop")
 	}
@@ -506,7 +506,7 @@ func TestSetNow_NilResetsToTimeNow(t *testing.T) {
 	SetNow(nil) // 应恢复默认 time.Now
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_ = TickRun(ctx, CRON_NOW, 50*time.Millisecond, func(ctx context.Context) *TickOptions { return nil }, 0, 0)
+	_ = TickRun(ctx, CRON_NOW, 50*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions { return nil })
 	if hits.Load() != 0 {
 		t.Fatalf("nil reset failed: custom func still called %d times", hits.Load())
 	}
@@ -522,10 +522,10 @@ func TestSetNow_AffectsAlignment(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	_ = TickRun(ctx, CRON, time.Second, func(ctx context.Context) *TickOptions {
+	_ = TickRun(ctx, CRON, time.Second, 0, 0, func(ctx context.Context) *TickOptions {
 		runs.Add(1)
 		return nil
-	}, 0, 0)
+	})
 	// 150ms 内定时器不会触发（d≈990ms），所以 f 不会被调用。
 	if n := runs.Load(); n != 0 {
 		t.Fatalf("expected 0 runs, got %d", n)
@@ -536,7 +536,7 @@ func TestCronRunLater_ExitsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- TickRun(ctx, CRON, 50*time.Millisecond, func(ctx context.Context) *TickOptions { return nil }, 0, 0)
+		done <- TickRun(ctx, CRON, 50*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions { return nil })
 	}()
 	time.Sleep(20 * time.Millisecond)
 	cancel()
