@@ -163,7 +163,7 @@ func TestTickRun_RunsImmediatelyThenAtInterval(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRun(ctx, 50*time.Millisecond, func(ctx context.Context) bool {
+	err := TickRun(ctx, TICK_NOW, 50*time.Millisecond, func(ctx context.Context) bool {
 		runs.Add(1)
 		return false
 	})
@@ -180,7 +180,7 @@ func TestTickRun_ExitsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- TickRun(ctx, 10*time.Millisecond, func(ctx context.Context) bool { return false })
+		done <- TickRun(ctx, TICK_NOW, 10*time.Millisecond, func(ctx context.Context) bool { return false })
 	}()
 	time.Sleep(30 * time.Millisecond)
 	cancel()
@@ -204,7 +204,7 @@ func TestTickRun_ZeroIntervalDoesNotPanic(t *testing.T) {
 			t.Fatalf("tickRun panicked on zero interval: %v", r)
 		}
 	}()
-	_ = TickRun(ctx, 0, func(ctx context.Context) bool {
+	_ = TickRun(ctx, TICK_NOW, 0, func(ctx context.Context) bool {
 		runs.Add(1)
 		return false
 	})
@@ -223,7 +223,7 @@ func TestCronRun_RunsImmediatelyThenAligned(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	err := CronRun(ctx, 100*time.Millisecond, 0, func(ctx context.Context) bool {
+	err := TickRun(ctx, CRON_NOW, 100*time.Millisecond, func(ctx context.Context) bool {
 		runs.Add(1)
 		return false
 	})
@@ -239,7 +239,7 @@ func TestCronRun_ExitsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- CronRun(ctx, 50*time.Millisecond, 0, func(ctx context.Context) bool { return false })
+		done <- TickRun(ctx, CRON_NOW, 50*time.Millisecond, func(ctx context.Context) bool { return false })
 	}()
 	time.Sleep(30 * time.Millisecond)
 	cancel()
@@ -258,7 +258,7 @@ func TestCronRun_DelayApplied(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	_ = CronRun(ctx, 100*time.Millisecond, 10*time.Millisecond, func(ctx context.Context) bool {
+	_ = TickRun(ctx, CRON_NOW, 100*time.Millisecond, func(ctx context.Context) bool {
 		runs.Add(1)
 		return false
 	})
@@ -272,7 +272,7 @@ func TestCronRun_ZeroIntervalNoHotLoop(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	_ = CronRun(ctx, 0, 0, func(ctx context.Context) bool {
+	_ = TickRun(ctx, CRON_NOW, 0, func(ctx context.Context) bool {
 		runs.Add(1)
 		return false
 	})
@@ -287,7 +287,7 @@ func TestTickRunLater_DoesNotRunImmediately(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	_ = TickRunLater(ctx, 200*time.Millisecond, func(ctx context.Context) bool {
+	_ = TickRun(ctx, TICK, 200*time.Millisecond, func(ctx context.Context) bool {
 		runs.Add(1)
 		return false
 	})
@@ -301,7 +301,7 @@ func TestTickRunLater_RunsOnTick(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRunLater(ctx, 50*time.Millisecond, func(ctx context.Context) bool {
+	err := TickRun(ctx, TICK, 50*time.Millisecond, func(ctx context.Context) bool {
 		runs.Add(1)
 		return false
 	})
@@ -319,7 +319,7 @@ func TestCronRunLater_DoesNotRunImmediately(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	_ = CronRunLater(ctx, time.Second, 0, func(ctx context.Context) bool {
+	_ = TickRun(ctx, CRON, time.Second, func(ctx context.Context) bool {
 		runs.Add(1)
 		return false
 	})
@@ -332,7 +332,7 @@ func TestCronRunLater_RunsOnAlignedTick(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 350*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	_ = CronRunLater(ctx, 100*time.Millisecond, 0, func(ctx context.Context) bool {
+	_ = TickRun(ctx, CRON, 100*time.Millisecond, func(ctx context.Context) bool {
 		runs.Add(1)
 		return false
 	})
@@ -348,7 +348,7 @@ func TestTickRun_StopsWhenFReturnsTrueImmediately(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRun(ctx, time.Hour, func(ctx context.Context) bool {
+	err := TickRun(ctx, TICK_NOW, time.Hour, func(ctx context.Context) bool {
 		runs.Add(1)
 		return true
 	})
@@ -364,7 +364,7 @@ func TestTickRun_StopsWhenFReturnsTrueOnTick(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRun(ctx, 10*time.Millisecond, func(ctx context.Context) bool {
+	err := TickRun(ctx, TICK_NOW, 10*time.Millisecond, func(ctx context.Context) bool {
 		return runs.Add(1) >= 3
 	})
 	if err != nil {
@@ -380,7 +380,7 @@ func TestTickRun_PanicReturnedAsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRun(ctx, 30*time.Millisecond, func(ctx context.Context) bool {
+	err := TickRun(ctx, TICK_NOW, 30*time.Millisecond, func(ctx context.Context) bool {
 		runs.Add(1)
 		panic("boom")
 	})
@@ -399,7 +399,7 @@ func TestTickRunLater_PanicOnTickReturnedAsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var runs atomic.Int32
-	err := TickRunLater(ctx, 30*time.Millisecond, func(ctx context.Context) bool {
+	err := TickRun(ctx, TICK, 30*time.Millisecond, func(ctx context.Context) bool {
 		if runs.Add(1) >= 2 {
 			panic("boom-later")
 		}
@@ -414,7 +414,7 @@ func TestCronRun_StopsWhenFReturnsTrue(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var runs atomic.Int32
-	err := CronRun(ctx, 50*time.Millisecond, 0, func(ctx context.Context) bool {
+	err := TickRun(ctx, CRON_NOW, 50*time.Millisecond, func(ctx context.Context) bool {
 		return runs.Add(1) >= 2
 	})
 	if err != nil {
@@ -429,7 +429,7 @@ func TestCronRun_PanicReturnedAsError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 	var runs atomic.Int32
-	err := CronRun(ctx, 100*time.Millisecond, 0, func(ctx context.Context) bool {
+	err := TickRun(ctx, CRON_NOW, 100*time.Millisecond, func(ctx context.Context) bool {
 		runs.Add(1)
 		panic("boom-cron")
 	})
@@ -452,7 +452,7 @@ func TestSetNow_UsedByCronLoop(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_ = CronRun(ctx, 50*time.Millisecond, 0, func(ctx context.Context) bool { return false })
+	_ = TickRun(ctx, CRON_NOW, 50*time.Millisecond, func(ctx context.Context) bool { return false })
 	if hits.Load() < 1 {
 		t.Fatal("custom now func was not invoked by cron loop")
 	}
@@ -467,7 +467,7 @@ func TestSetNow_NilResetsToTimeNow(t *testing.T) {
 	SetNow(nil) // 应恢复默认 time.Now
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	_ = CronRun(ctx, 50*time.Millisecond, 0, func(ctx context.Context) bool { return false })
+	_ = TickRun(ctx, CRON_NOW, 50*time.Millisecond, func(ctx context.Context) bool { return false })
 	if hits.Load() != 0 {
 		t.Fatalf("nil reset failed: custom func still called %d times", hits.Load())
 	}
@@ -483,7 +483,7 @@ func TestSetNow_AffectsAlignment(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
 	var runs atomic.Int32
-	_ = CronRunLater(ctx, time.Second, 0, func(ctx context.Context) bool {
+	_ = TickRun(ctx, CRON, time.Second, func(ctx context.Context) bool {
 		runs.Add(1)
 		return false
 	})
@@ -497,7 +497,7 @@ func TestCronRunLater_ExitsOnCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- CronRunLater(ctx, 50*time.Millisecond, 0, func(ctx context.Context) bool { return false })
+		done <- TickRun(ctx, CRON, 50*time.Millisecond, func(ctx context.Context) bool { return false })
 	}()
 	time.Sleep(20 * time.Millisecond)
 	cancel()

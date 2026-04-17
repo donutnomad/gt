@@ -40,6 +40,27 @@ func Safe(fn func() error) (err error) {
 	return fn()
 }
 
+// TryRecv 非阻塞地从 channel 接收一个值，成功返回 (value, true)，channel 为空返回零值和 false。
+func TryRecv[T any](ch <-chan T) (T, bool) {
+	select {
+	case v := <-ch:
+		return v, true
+	default:
+		var zero T
+		return zero, false
+	}
+}
+
+// TrySend 非阻塞地向 channel 发送一个值，成功返回 true，channel 已满返回 false。
+func TrySend[T any](ch chan<- T, v T) bool {
+	select {
+	case ch <- v:
+		return true
+	default:
+		return false
+	}
+}
+
 // WaitAll 为每个 fn 启动 goroutine 并等待全部退出。
 // 每个 goroutine 内部自动捕获 panic（与 Lifecycle.Go 一致），不会中断其他 fn。
 func WaitAll(ctx context.Context, fns ...func(ctx context.Context)) {

@@ -22,10 +22,7 @@ func (s *Signal) Notify() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
-	select {
-	case s.ch <- struct{}{}:
-	default:
-	}
+	TrySend(s.ch, struct{}{})
 }
 
 // C 返回只读 channel，用于 select。读取即消费，下次重新阻塞。
@@ -41,8 +38,5 @@ func (s *Signal) Drain() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.init()
-	select {
-	case <-s.ch:
-	default:
-	}
+	TryRecv(s.ch)
 }

@@ -62,50 +62,53 @@ func LoopFn(backoff time.Duration, fn func(ctx context.Context) error) func(ctx 
 	}
 }
 
-// TickCronFunc 是 TickRun/CronRun 系列接受的回调签名：
-// 返回 true 表示主动停止循环（外层函数返回 nil）；返回 false 继续。
-// f 的 panic 会被内部 recover 并转为 error 从外层函数返回。
+// TickCronFunc 是 TickRun/LoopRun 接受的回调签名：
+// 返回 true 表示主动停止循环（函数返回 nil）；返回 false 继续。
+// f 的 panic 在受控模式（TickRun）下转为 error 返回；在守护模式（LoopRun）下记日志后继续。
 type TickCronFunc = func(ctx context.Context) (stop bool)
 
-// TickRun 以固定间隔触发 f：启动时先立即跑一次，之后每隔 interval 触发一次。
-// f 返回 true 或 ctx 取消时退出；f 的 panic 会被捕获并作为 error 返回。
-//
-// 注意：
-//   - interval<=0 会被兜底为 minLoopBackoff，避免 time.NewTicker panic。
-func TickRun(ctx context.Context, interval time.Duration, f TickCronFunc) error {
-	if stop, err := callSafe(ctx, f); err != nil {
-		return err
-	} else if stop {
-		return nil
+// TimerMode 控制循环的触发节奏与首次触发时机。
+type TimerMode int
+
+const (
+	// TICK_NOW Tick 节奏，启动时立即触发一次，之后每隔 interval 触发。
+	TICK_NOW TimerMode = iota
+	// TICK Tick 节奏，等待第一个 interval 后才首次触发。
+	TICK
+	// CRON_NOW Cron 节奏，启动时立即触发一次，之后对齐到时钟整数倍触发。
+	CRON_NOW
+	// CRON Cron 节奏，等待第一个对齐点后才首次触发。
+	// 对齐基准为 UTC，interval 能整除分钟/小时时与 cron 一致；否则会出现整点飘移。
+	CRON
+)
+
+// TickRun 以 mode 指定的节奏和首次时机触发 f，直到 ctx 取消或 f 返回 true。
+// f 的 panic 会被捕获并作为 error 返回（受控模式）。
+// delay 仅对 CRON/CRON_NOW 生效，在每个对齐点后额外等待 delay 再触发。
+// interval<=0 会被兜底为 minLoopBackoff。
+func TickRun(ctx context.Context, mode TimerMode, interval time.Duration, f TickCronFunc, delay ...time.Duration) error {
+	imm := mode == TICK_NOW || mode == CRON_NOW
+	if mode == CRON_NOW || mode == CRON {
+		return runCron(ctx, interval, firstDuration(delay), f, imm, false)
 	}
-	return tickLoop(ctx, interval, f)
+	return runTick(ctx, interval, f, imm, false)
 }
 
-// TickRunLater 与 TickRun 行为相同，区别是启动时不立即调用 f，而是等到第一次 tick 才触发。
-func TickRunLater(ctx context.Context, interval time.Duration, f TickCronFunc) error {
-	return tickLoop(ctx, interval, f)
-}
-
-// CronRun 按固定时间点对齐触发，类似 cron 的行为。
-// 例如 interval=3s 时，在每分钟的 0s、3s、6s... 时刻触发，不受执行耗时影响。
-// delay>0 时在每次对齐点后再额外等待 delay 再触发 f（可被 ctx 中断）。
-// f 返回 true 或 ctx 取消时退出；f 的 panic 会被捕获并作为 error 返回。
-//
-// 注意：
-//   - interval<=0 会被兜底为 minLoopBackoff，避免 Truncate(0) 造成热循环。
-//   - 对齐基准为 Unix 零点（UTC），interval 能整除分钟/小时时与 cron 一致；否则会出现整点飘移。
-func CronRun(ctx context.Context, interval, delay time.Duration, f TickCronFunc) error {
-	if stop, err := callSafe(ctx, f); err != nil {
-		return err
-	} else if stop {
-		return nil
+// LoopRun 与 TickRun 行为相同，但 f 的 error/panic 均被记日志后忽略（守护模式），循环持续到 ctx 取消或 f 返回 true。
+func LoopRun(ctx context.Context, mode TimerMode, interval time.Duration, f TickCronFunc, delay ...time.Duration) {
+	imm := mode == TICK_NOW || mode == CRON_NOW
+	if mode == CRON_NOW || mode == CRON {
+		_ = runCron(ctx, interval, firstDuration(delay), f, imm, true)
+	} else {
+		_ = runTick(ctx, interval, f, imm, true)
 	}
-	return cronLoop(ctx, max(minLoopBackoff, interval), delay, f)
 }
 
-// CronRunLater 与 CronRun 行为相同，区别是启动时不立即调用 f，而是等到第一个对齐点才触发。
-func CronRunLater(ctx context.Context, interval, delay time.Duration, f TickCronFunc) error {
-	return cronLoop(ctx, max(minLoopBackoff, interval), delay, f)
+func firstDuration(s []time.Duration) time.Duration {
+	if len(s) > 0 {
+		return s[0]
+	}
+	return 0
 }
 
 // callSafe 调用 f 并 recover panic：
@@ -123,7 +126,19 @@ func callSafe(ctx context.Context, f TickCronFunc) (stop bool, err error) {
 	return f(ctx), nil
 }
 
-func tickLoop(ctx context.Context, interval time.Duration, f TickCronFunc) error {
+// runTick 是 TickRun/TickRunLater/LoopTick/LoopTickLater 的统一实现。
+// immediately=true 时启动先立即调用一次 f；guard=true 时错误/panic 记日志后继续，否则直接返回。
+func runTick(ctx context.Context, interval time.Duration, f TickCronFunc, immediately, guard bool) error {
+	if immediately {
+		if stop, err := callSafe(ctx, f); err != nil {
+			if !guard {
+				return err
+			}
+		} else if stop {
+			return nil
+		}
+	}
+
 	ticker := time.NewTicker(max(minLoopBackoff, interval))
 	defer ticker.Stop()
 
@@ -134,6 +149,9 @@ func tickLoop(ctx context.Context, interval time.Duration, f TickCronFunc) error
 		case <-ticker.C:
 			stop, err := callSafe(ctx, f)
 			if err != nil {
+				if guard {
+					continue
+				}
 				return err
 			}
 			if stop {
@@ -143,7 +161,20 @@ func tickLoop(ctx context.Context, interval time.Duration, f TickCronFunc) error
 	}
 }
 
-func cronLoop(ctx context.Context, interval, delay time.Duration, f TickCronFunc) error {
+// runCron 是 CronRun/CronRunLater/LoopCron/LoopCronLater 的统一实现。
+// immediately=true 时启动先立即调用一次 f；guard=true 时错误/panic 记日志后继续，否则直接返回。
+func runCron(ctx context.Context, interval, delay time.Duration, f TickCronFunc, immediately, guard bool) error {
+	interval = max(minLoopBackoff, interval)
+	if immediately {
+		if stop, err := callSafe(ctx, f); err != nil {
+			if !guard {
+				return err
+			}
+		} else if stop {
+			return nil
+		}
+	}
+
 	for {
 		now := getNow()
 		next := now.Truncate(interval).Add(interval)
@@ -163,6 +194,9 @@ func cronLoop(ctx context.Context, interval, delay time.Duration, f TickCronFunc
 			}
 			stop, err := callSafe(ctx, f)
 			if err != nil {
+				if guard {
+					continue
+				}
 				return err
 			}
 			if stop {
