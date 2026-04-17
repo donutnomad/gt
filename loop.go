@@ -20,6 +20,27 @@ type TickOptions struct {
 	Delay    time.Duration // >0 时覆盖 delayCall，每次调用 f 前等待此时长
 }
 
+// applyInterval 若 opts 设置了 Interval，更新 interval；ticker 非 nil 时同步 Reset。
+func (o *TickOptions) applyInterval(interval *time.Duration, t ticker) {
+	if o == nil || o.Interval <= 0 {
+		return
+	}
+	newInterval := max(minLoopBackoff, o.Interval)
+	if newInterval != *interval {
+		*interval = newInterval
+		if t != nil {
+			t.Reset(*interval)
+		}
+	}
+}
+
+// applyDelay 若 opts 设置了 Delay，覆盖当前 delay。
+func (o *TickOptions) applyDelay(delay *time.Duration) {
+	if o != nil && o.Delay > 0 {
+		*delay = o.Delay
+	}
+}
+
 // TickFunc 返回 *TickOptions；nil 表示继续，不修改任何参数。
 type TickFunc = func(ctx context.Context) *TickOptions
 
@@ -89,14 +110,30 @@ func callSafe(ctx context.Context, f TickFunc) (opts *TickOptions, err error) {
 	return f(ctx), nil
 }
 
-func newTickerChan(mode TimerMode, interval time.Duration) (ch <-chan time.Time, stop func()) {
+type ticker interface {
+	Chan() <-chan time.Time
+	Reset(d time.Duration)
+	Stop()
+}
+
+type stdTicker struct{ t *time.Ticker }
+
+func (s *stdTicker) Chan() <-chan time.Time { return s.t.C }
+func (s *stdTicker) Reset(d time.Duration)  { s.t.Reset(d) }
+func (s *stdTicker) Stop()                  { s.t.Stop() }
+
+type cronTicker struct{ t *CronTicker }
+
+func (c *cronTicker) Chan() <-chan time.Time { return c.t.C }
+func (c *cronTicker) Reset(d time.Duration)  { c.t.Reset(d) }
+func (c *cronTicker) Stop()                  { c.t.Stop() }
+
+func newTicker(mode TimerMode, interval time.Duration) ticker {
 	interval = max(minLoopBackoff, interval)
 	if mode == CRON || mode == CRON_NOW {
-		t := NewCronTicker(interval)
-		return t.C, t.Stop
+		return &cronTicker{NewCronTicker(interval)}
 	}
-	t := time.NewTicker(interval)
-	return t.C, t.Stop
+	return &stdTicker{time.NewTicker(interval)}
 }
 
 func runLoop(ctx context.Context, mode TimerMode, interval, delay, initialDelay time.Duration, f TickFunc, immediately, guard bool) error {
@@ -128,44 +165,29 @@ func runLoop(ctx context.Context, mode TimerMode, interval, delay, initialDelay 
 			if opts.Stop {
 				return nil
 			}
-			if opts.Interval > 0 {
-				interval = max(minLoopBackoff, opts.Interval)
-			}
-			if opts.Delay > 0 {
-				delay = opts.Delay
-			}
+			opts.applyInterval(&interval, nil)
+			opts.applyDelay(&delay)
 		}
 	}
 
-	ch, stopTicker := newTickerChan(mode, interval)
+	t := newTicker(mode, interval)
+	defer t.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			stopTicker()
 			return ctx.Err()
-		case <-ch:
+		case <-t.Chan():
 			opts, err := call(delay)
 			if err != nil {
-				stopTicker()
 				return err
 			}
 			if opts != nil {
 				if opts.Stop {
-					stopTicker()
 					return nil
 				}
-				if opts.Interval > 0 {
-					newInterval := max(minLoopBackoff, opts.Interval)
-					if newInterval != interval {
-						stopTicker()
-						interval = newInterval
-						ch, stopTicker = newTickerChan(mode, interval)
-					}
-				}
-				if opts.Delay > 0 {
-					delay = opts.Delay
-				}
+				opts.applyInterval(&interval, t)
+				opts.applyDelay(&delay)
 			}
 		}
 	}
