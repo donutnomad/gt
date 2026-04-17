@@ -549,3 +549,130 @@ func TestCronRunLater_ExitsOnCancel(t *testing.T) {
 		t.Fatal("CronRunLater did not exit on cancel")
 	}
 }
+
+// --- TickOptions.Interval 动态更新 ---
+
+func TestTickRun_DynamicIntervalChange(t *testing.T) {
+	// 第1次调用返回 Interval=200ms，使后续 tick 间隔从 50ms 变为 200ms。
+	// 验证：interval 改变后，后续两次 tick 之间的时间 >= 150ms（明显大于原 50ms）。
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var runs atomic.Int32
+	var t1, t2 time.Time // 记录第2、3次调用的时间戳
+
+	_ = TickRun(ctx, TICK_NOW, 50*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions {
+		n := runs.Add(1)
+		switch n {
+		case 1:
+			// 首次：将 interval 从 50ms 改为 200ms
+			return &TickOptions{Interval: 200 * time.Millisecond}
+		case 2:
+			t1 = time.Now()
+			return nil
+		case 3:
+			t2 = time.Now()
+			return &TickOptions{Stop: true}
+		}
+		return nil
+	})
+
+	if runs.Load() != 3 {
+		t.Fatalf("expected 3 runs, got %d", runs.Load())
+	}
+	// 第2、3次之间间隔应 >= 150ms（新 interval=200ms，留 50ms 抖动余量）
+	gap := t2.Sub(t1)
+	if gap < 150*time.Millisecond {
+		t.Fatalf("interval not updated: gap between run2 and run3 = %v, want >=150ms", gap)
+	}
+}
+
+func TestTickRun_DynamicIntervalBelowMinClamped(t *testing.T) {
+	// 动态设置 Interval 小于 minLoopBackoff(100ms) 应被 clamp 到 100ms，不热循环。
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	var runs atomic.Int32
+	_ = TickRun(ctx, TICK_NOW, 200*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions {
+		runs.Add(1)
+		// 每次都尝试把 interval 设为 1ms（极小值），期望被兜底到 100ms
+		return &TickOptions{Interval: 1 * time.Millisecond}
+	})
+
+	// 500ms 内，clamp 到 100ms 后最多约 5 次；若热循环会到数百次
+	if n := runs.Load(); n > 15 {
+		t.Fatalf("hot loop: interval clamp failed, got %d runs in 500ms", n)
+	}
+}
+
+// --- TickOptions.Delay 动态更新 ---
+
+func TestTickRun_DynamicDelayChange(t *testing.T) {
+	// 第1次调用返回 Delay=100ms，使后续每次 tick 前等待从 0 变为 100ms。
+	// 验证：第2次和第3次 tick 之间，由于 delayCall=100ms，耗时 >= 150ms（100ms delay + ~50ms tick）。
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var runs atomic.Int32
+	var t1, t2 time.Time
+
+	_ = TickRun(ctx, TICK_NOW, 50*time.Millisecond, 0, 0, func(ctx context.Context) *TickOptions {
+		n := runs.Add(1)
+		switch n {
+		case 1:
+			// 首次：将后续每次调用的 delay 设为 100ms
+			return &TickOptions{Delay: 100 * time.Millisecond}
+		case 2:
+			t1 = time.Now()
+			return nil
+		case 3:
+			t2 = time.Now()
+			return &TickOptions{Stop: true}
+		}
+		return nil
+	})
+
+	if runs.Load() != 3 {
+		t.Fatalf("expected 3 runs, got %d", runs.Load())
+	}
+	// 第2→3次之间：delay=100ms（ticker fire 后先等 delay，再执行）
+	// tick 触发后立即等 delay=100ms，所以 gap >= 80ms（留 20ms 抖动余量）
+	gap := t2.Sub(t1)
+	if gap < 80*time.Millisecond {
+		t.Fatalf("delay not updated: gap between run2 and run3 = %v, want >=80ms", gap)
+	}
+}
+
+func TestTickRun_DynamicDelayZeroNoEffect(t *testing.T) {
+	// Delay=0 不应覆盖现有 delayCall，原有 delayCall=50ms 应保持。
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var runs atomic.Int32
+	var t1, t2 time.Time
+
+	_ = TickRun(ctx, TICK_NOW, 50*time.Millisecond, 50*time.Millisecond, 0, func(ctx context.Context) *TickOptions {
+		n := runs.Add(1)
+		switch n {
+		case 1:
+			// 返回 Delay=0，不应清除已有的 delayCall=50ms
+			return &TickOptions{Delay: 0}
+		case 2:
+			t1 = time.Now()
+			return nil
+		case 3:
+			t2 = time.Now()
+			return &TickOptions{Stop: true}
+		}
+		return nil
+	})
+
+	if runs.Load() != 3 {
+		t.Fatalf("expected 3 runs, got %d", runs.Load())
+	}
+	// 第2→3次之间：原 delayCall=50ms 未被清除，gap >= 80ms（50ms delay + ~50ms tick，留余量）
+	gap := t2.Sub(t1)
+	if gap < 80*time.Millisecond {
+		t.Fatalf("Delay=0 wiped existing delayCall: gap=%v, want >=80ms", gap)
+	}
+}
