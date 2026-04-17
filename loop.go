@@ -13,9 +13,15 @@ import (
 // 对用户合法传入的正值不影响，仅对 <=0 或异常小的值起兜底作用。
 const minLoopBackoff = 100 * time.Millisecond
 
-// TickFunc
-// 返回 true 表示主动停止循环
-type TickFunc = func(ctx context.Context) (stop bool)
+// TickOptions tick 回调的返回控制。nil 表示继续循环且不修改任何参数。
+type TickOptions struct {
+	Stop     bool
+	Interval time.Duration // >0 时替换当前 interval，重建 ticker
+	Delay    time.Duration // >0 时下次执行前额外等待
+}
+
+// TickFunc 返回 *TickOptions；nil 表示继续，不修改任何参数。
+type TickFunc = func(ctx context.Context) *TickOptions
 
 type TimerMode int
 
@@ -57,24 +63,24 @@ func LoopFn(backoff time.Duration, fn func(ctx context.Context) error) func(ctx 
 
 // TickRun 定时触发，ctx cancel和panic后返回错误 并 停止运行
 // interval<=0 时设置为 minLoopBackoff。
-func TickRun(ctx context.Context, mode TimerMode, interval time.Duration, f TickFunc, delay ...time.Duration) error {
-	return runLoop(ctx, mode, interval, firstDuration(delay), f, mode == TICK_NOW || mode == CRON_NOW, false)
+func TickRun(ctx context.Context, mode TimerMode, interval time.Duration, f TickFunc, delayRun ...time.Duration) error {
+	return runLoop(ctx, mode, interval, firstDuration(delayRun), f, mode == TICK_NOW || mode == CRON_NOW, false)
 }
 
 // LoopRun 守护定时触发，仅ctx cancel会停止
-func LoopRun(ctx context.Context, mode TimerMode, interval time.Duration, f func(ctx context.Context), delay ...time.Duration) {
-	_ = runLoop(ctx, mode, interval, firstDuration(delay), func(ctx context.Context) (stop bool) {
+func LoopRun(ctx context.Context, mode TimerMode, interval time.Duration, f func(ctx context.Context), delayRun ...time.Duration) {
+	_ = runLoop(ctx, mode, interval, firstDuration(delayRun), func(ctx context.Context) *TickOptions {
 		f(ctx)
-		return false
+		return nil
 	}, mode == TICK_NOW || mode == CRON_NOW, true)
 }
 
-func callSafe(ctx context.Context, f TickFunc) (stop bool, err error) {
+func callSafe(ctx context.Context, f TickFunc) (opts *TickOptions, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			stack := debug.Stack()
 			slog.ErrorContext(ctx, "[gt] tick/cron: panic recovered", "panic", r, "stack", string(stack))
-			stop = false
+			opts = nil
 			err = fmt.Errorf("panic: %v\n%s", r, stack)
 		}
 	}()
@@ -93,44 +99,69 @@ func newTickerChan(mode TimerMode, interval time.Duration) (ch <-chan time.Time,
 
 func runLoop(ctx context.Context, mode TimerMode, interval, delay time.Duration, f TickFunc, immediately, guard bool) error {
 	// call 调用 f 一次，先等待 delay 再执行。
-	// 返回 done=true 表示应退出循环，err!=nil 表示需将错误向上返回。
-	call := func() (done bool, err error) {
-		if delay > 0 {
-			SleepCtx(ctx, delay)
+	// 返回 opts!=nil 时按 opts 调整后续行为，err!=nil 表示需将错误向上返回。
+	call := func(d time.Duration) (opts *TickOptions, err error) {
+		if d > 0 {
+			SleepCtx(ctx, d)
 			if ctx.Err() != nil {
-				return true, ctx.Err()
+				return nil, ctx.Err()
 			}
 		}
-		stop, err := callSafe(ctx, f)
+		opts, err = callSafe(ctx, f)
 		if err != nil {
 			if guard {
-				return false, nil
+				return nil, nil
 			}
-			return true, err
+			return nil, err
 		}
-		return stop, nil
+		return opts, nil
 	}
 
 	if immediately {
-		if done, err := call(); err != nil {
+		// 立即执行不等待 delay，delay 只在 ticker 触发后生效
+		opts, err := call(0)
+		if err != nil {
 			return err
-		} else if done {
-			return nil
+		}
+		if opts != nil {
+			if opts.Stop {
+				return nil
+			}
+			if opts.Interval > 0 {
+				interval = opts.Interval
+			}
+			if opts.Delay > 0 {
+				delay = opts.Delay
+			}
 		}
 	}
 
-	ch, stop := newTickerChan(mode, interval)
-	defer stop()
+	ch, stopTicker := newTickerChan(mode, interval)
 
 	for {
 		select {
 		case <-ctx.Done():
+			stopTicker()
 			return ctx.Err()
 		case <-ch:
-			if done, err := call(); err != nil {
+			opts, err := call(delay)
+			if err != nil {
+				stopTicker()
 				return err
-			} else if done {
-				return nil
+			}
+			if opts != nil {
+				if opts.Stop {
+					stopTicker()
+					return nil
+				}
+				if opts.Interval > 0 && opts.Interval != interval {
+					stopTicker()
+					interval = opts.Interval
+					ch, stopTicker = newTickerChan(mode, interval)
+				}
+				if opts.Delay > 0 {
+					delay = opts.Delay
+				}
 			}
 		}
 	}
