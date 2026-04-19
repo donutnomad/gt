@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -139,7 +141,7 @@ func (r *Registry) Register(name string, callable any, metadata ...Metadata) err
 
 	copiedMetadata := Metadata{}
 	if len(metadata) > 0 && metadata[0] != nil {
-		copiedMetadata = cloneMetadata(metadata[0])
+		copiedMetadata = maps.Clone(metadata[0])
 	}
 
 	r.callables[name] = &MethodInfo{
@@ -150,20 +152,6 @@ func (r *Registry) Register(name string, callable any, metadata ...Metadata) err
 		outputTypes:  outputTypes,
 	}
 	return nil
-}
-
-func cloneTypes(src []reflect.Type) []reflect.Type {
-	dst := make([]reflect.Type, len(src))
-	copy(dst, src)
-	return dst
-}
-
-func cloneMetadata(src Metadata) Metadata {
-	dst := make(Metadata, len(src))
-	for k, v := range src {
-		dst[k] = v
-	}
-	return dst
 }
 
 // getReflectValue converts an any to reflect.Value.
@@ -335,10 +323,10 @@ func (r *Registry) List() []CallableInfo {
 	for name, info := range r.callables {
 		items = append(items, CallableInfo{
 			Name:         name,
-			Metadata:     cloneMetadata(info.metadata),
+			Metadata:     maps.Clone(info.metadata),
 			ReceiverType: info.receiverType,
-			InputTypes:   cloneTypes(info.inputTypes),
-			OutputTypes:  cloneTypes(info.outputTypes),
+			InputTypes:   slices.Clone(info.inputTypes),
+			OutputTypes:  slices.Clone(info.outputTypes),
 		})
 	}
 	return items
@@ -368,10 +356,10 @@ func (r *Registry) ListByReceiverTypes(values ...any) []CallableInfo {
 		}
 		items = append(items, CallableInfo{
 			Name:         name,
-			Metadata:     cloneMetadata(info.metadata),
+			Metadata:     maps.Clone(info.metadata),
 			ReceiverType: info.receiverType,
-			InputTypes:   cloneTypes(info.inputTypes),
-			OutputTypes:  cloneTypes(info.outputTypes),
+			InputTypes:   slices.Clone(info.inputTypes),
+			OutputTypes:  slices.Clone(info.outputTypes),
 		})
 	}
 	return items
