@@ -25,10 +25,20 @@ var (
 
 type ReturnTypeChecker func([]reflect.Type) error
 
+type Metadata map[string]any
+
+type CallableInfo struct {
+	Name         string
+	Metadata     Metadata
+	ReceiverType reflect.Type
+}
+
 // MethodInfo stores information about a registered method and its associated instance.
 type MethodInfo struct {
-	method   reflect.Value
-	instance reflect.Value
+	method       reflect.Value
+	instance     reflect.Value
+	metadata     Metadata
+	receiverType reflect.Type
 }
 
 // Registry stores registered callables by name and injected instances.
@@ -88,7 +98,7 @@ func (r *Registry) InjectInstance(instance any) error {
 //
 // Otherwise the callable is treated as a normal function and all parameters,
 // including the first one, must be provided by the caller.
-func (r *Registry) Register(name string, callable any) error {
+func (r *Registry) Register(name string, callable any, metadata ...Metadata) error {
 	if name == "" {
 		return fmt.Errorf("%w", ErrEmptyName)
 	}
@@ -113,17 +123,34 @@ func (r *Registry) Register(name string, callable any) error {
 	}
 
 	var instance reflect.Value
+	var receiverType reflect.Type
 	if callableVal.Type().NumIn() > 0 {
-		if injected, exists := r.instances[callableVal.Type().In(0)]; exists {
+		receiverType = callableVal.Type().In(0)
+		if injected, exists := r.instances[receiverType]; exists {
 			instance = injected
 		}
 	}
 
+	copiedMetadata := Metadata{}
+	if len(metadata) > 0 && metadata[0] != nil {
+		copiedMetadata = cloneMetadata(metadata[0])
+	}
+
 	r.callables[name] = &MethodInfo{
-		method:   callableVal,
-		instance: instance,
+		method:       callableVal,
+		instance:     instance,
+		metadata:     copiedMetadata,
+		receiverType: receiverType,
 	}
 	return nil
+}
+
+func cloneMetadata(src Metadata) Metadata {
+	dst := make(Metadata, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 // getReflectValue converts an any to reflect.Value.
@@ -269,15 +296,50 @@ func (r *Registry) Clear() {
 	r.callables = make(map[string]*MethodInfo)
 }
 
-// List returns all registered names.
-func (r *Registry) List() []string {
+// List returns all registered callables with their metadata and receiver type.
+func (r *Registry) List() []CallableInfo {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	names := make([]string, 0, len(r.callables))
-	for name := range r.callables {
-		names = append(names, name)
+	items := make([]CallableInfo, 0, len(r.callables))
+	for name, info := range r.callables {
+		items = append(items, CallableInfo{
+			Name:         name,
+			Metadata:     cloneMetadata(info.metadata),
+			ReceiverType: info.receiverType,
+		})
 	}
-	return names
+	return items
+}
+
+// ListByReceiverTypes returns registered callables whose first parameter type matches any of the provided values' types.
+func (r *Registry) ListByReceiverTypes(values ...any) []CallableInfo {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if len(values) == 0 {
+		return nil
+	}
+
+	allowed := make(map[reflect.Type]struct{}, len(values))
+	for _, value := range values {
+		typ := reflect.TypeOf(value)
+		if typ != nil {
+			allowed[typ] = struct{}{}
+		}
+	}
+
+	items := make([]CallableInfo, 0, len(r.callables))
+	for name, info := range r.callables {
+		if _, ok := allowed[info.receiverType]; !ok {
+			continue
+		}
+		items = append(items, CallableInfo{
+			Name:         name,
+			Metadata:     cloneMetadata(info.metadata),
+			ReceiverType: info.receiverType,
+		})
+	}
+	return items
 }
 
 var errorType = reflect.TypeOf((*error)(nil)).Elem()

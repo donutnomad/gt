@@ -624,3 +624,75 @@ func TestExecuteConcurrentReads(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestRegistryListWithMetadataAndReceiverTypeFilter(t *testing.T) {
+	reg := NewRegistry()
+
+	bookMetadata := map[string]any{"name": "book-handler"}
+	if err := reg.Register("bookFn", func(b *Book, title string) string {
+		return b.Title + title
+	}, bookMetadata); err != nil {
+		t.Fatal(err)
+	}
+	bookMetadata["name"] = "mutated"
+
+	if err := reg.Register("stringFn", func(s string) string { return s }, map[string]any{"name": "string-handler"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.Register("noArgFn", func() string { return "ok" }); err != nil {
+		t.Fatal(err)
+	}
+
+	items := reg.List()
+	if len(items) != 3 {
+		t.Fatalf("expected 3 items, got %d", len(items))
+	}
+
+	indexByName := make(map[string]CallableInfo, len(items))
+	for _, item := range items {
+		indexByName[item.Name] = item
+	}
+
+	bookItem := indexByName["bookFn"]
+	if got := bookItem.Metadata["name"]; got != "book-handler" {
+		t.Fatalf("expected metadata copy to preserve original value, got %v", got)
+	}
+	if bookItem.ReceiverType != reflect.TypeOf(&Book{}) {
+		t.Fatalf("expected receiver type *Book, got %v", bookItem.ReceiverType)
+	}
+
+	noArgItem := indexByName["noArgFn"]
+	if noArgItem.ReceiverType != nil {
+		t.Fatalf("expected noArgFn to have nil receiver type, got %v", noArgItem.ReceiverType)
+	}
+	if len(noArgItem.Metadata) != 0 {
+		t.Fatalf("expected empty metadata for noArgFn, got %v", noArgItem.Metadata)
+	}
+
+	filtered := reg.ListByReceiverTypes(&Book{}, "")
+	if len(filtered) != 2 {
+		t.Fatalf("expected 2 filtered items, got %d", len(filtered))
+	}
+
+	filteredNames := map[string]bool{}
+	for _, item := range filtered {
+		filteredNames[item.Name] = true
+	}
+	if !filteredNames["bookFn"] || !filteredNames["stringFn"] {
+		t.Fatalf("unexpected filtered result: %v", filteredNames)
+	}
+	if filteredNames["noArgFn"] {
+		t.Fatalf("did not expect noArgFn in filtered result")
+	}
+
+	filteredByValue := reg.ListByReceiverTypes(Book{})
+	if len(filteredByValue) != 0 {
+		t.Fatalf("expected no matches for Book{} value receiver type, got %d", len(filteredByValue))
+	}
+
+	var nilBook *Book
+	filteredByTypedNil := reg.ListByReceiverTypes(nilBook)
+	if len(filteredByTypedNil) != 1 || filteredByTypedNil[0].Name != "bookFn" {
+		t.Fatalf("expected typed nil pointer to match bookFn, got %v", filteredByTypedNil)
+	}
+}
