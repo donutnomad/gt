@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync"
 )
 
@@ -404,6 +405,9 @@ func validateNetworkReturnTypeWithOptions(typ reflect.Type, allowTopLevelError b
 		if implementsJSONMarshaling(base) {
 			return nil
 		}
+		if err := validateNaturalType(base, map[reflect.Type]bool{}); err == nil {
+			return nil
+		}
 		return fmt.Errorf("type %v must implement json.Marshaler and json.Unmarshaler", typ)
 	}
 
@@ -415,4 +419,51 @@ func implementsJSONMarshaling(typ reflect.Type) bool {
 	marshalOK := typ.Implements(marshalerType) || ptrType.Implements(marshalerType)
 	unmarshalOK := typ.Implements(unmarshalerType) || ptrType.Implements(unmarshalerType)
 	return marshalOK && unmarshalOK
+}
+
+func validateNaturalType(typ reflect.Type, visiting map[reflect.Type]bool) error {
+	for typ.Kind() == reflect.Ptr {
+		typ = typ.Elem()
+	}
+
+	switch typ.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64,
+		reflect.String:
+		return nil
+	case reflect.Slice:
+		return validateNaturalType(typ.Elem(), visiting)
+	case reflect.Struct:
+		if visiting[typ] {
+			return fmt.Errorf("cyclic type %v is not supported", typ)
+		}
+		visiting[typ] = true
+		defer delete(visiting, typ)
+		for i := 0; i < typ.NumField(); i++ {
+			field := typ.Field(i)
+			if jsonTagIgnored(field) {
+				continue
+			}
+			if !field.IsExported() {
+				return fmt.Errorf("field %s of %v is not exported", field.Name, typ)
+			}
+			if err := validateNaturalType(field.Type, visiting); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("type %v is not a natural transport type", typ)
+	}
+}
+
+func jsonTagIgnored(field reflect.StructField) bool {
+	tag := field.Tag.Get("json")
+	if tag == "" {
+		return false
+	}
+	name := strings.Split(tag, ",")[0]
+	return name == "-"
 }

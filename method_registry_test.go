@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/big"
 	"reflect"
 	"sync"
 	"testing"
@@ -236,6 +237,31 @@ func (p *JSONPayload) UnmarshalJSON(data []byte) error {
 
 type PlainPayload struct {
 	Value string
+}
+
+type NestedNaturalPayload struct {
+	Label string
+	Flags []bool
+}
+
+type NaturalPayload struct {
+	Name   string
+	Count  int
+	Scores []float64
+	Child  NestedNaturalPayload
+}
+
+type InvalidNestedPayload struct {
+	Meta map[string]string
+}
+
+type InvalidNaturalPayload struct {
+	Child InvalidNestedPayload
+}
+
+type IgnoredBigIntPayload struct {
+	Name    string   `json:"name"`
+	Skipped chan int `json:"-"`
 }
 
 type StructuredKey struct {
@@ -491,6 +517,12 @@ func TestRegisterReturnTypeChecker(t *testing.T) {
 
 	reg.SetReturnTypeChecker(NetworkReturnTypeChecker)
 
+	if err := reg.Register("builtinTypes2", func() *big.Int {
+		return nil
+	}); err != nil {
+		t.Fatalf("expected *big.Int to pass because it implements JSON interfaces, got %v", err)
+	}
+
 	if err := reg.Register("builtinTypes", func() (string, *int, error, []byte, bool) {
 		return "", nil, nil, nil, false
 	}); err != nil {
@@ -507,8 +539,20 @@ func TestRegisterReturnTypeChecker(t *testing.T) {
 		t.Fatalf("expected JSONPayload to pass, got %v", err)
 	}
 
-	if err := reg.Register("plainStruct2", func() PlainPayload { return PlainPayload{} }); !errors.Is(err, ErrInvalidReturnType) {
-		t.Fatalf("expected ErrInvalidReturnType, got %v", err)
+	if err := reg.Register("plainStruct2", func() PlainPayload { return PlainPayload{} }); err != nil {
+		t.Fatalf("expected PlainPayload to pass as natural struct, got %v", err)
+	}
+
+	if err := reg.Register("naturalStruct", func() NaturalPayload { return NaturalPayload{} }); err != nil {
+		t.Fatalf("expected NaturalPayload to pass as nested natural struct, got %v", err)
+	}
+
+	if err := reg.Register("ignoredBigIntStruct", func() IgnoredBigIntPayload { return IgnoredBigIntPayload{} }); err != nil {
+		t.Fatalf("expected IgnoredBigIntPayload to pass because json:\"-\" field should be ignored, got %v", err)
+	}
+
+	if err := reg.Register("invalidNaturalStruct", func() InvalidNaturalPayload { return InvalidNaturalPayload{} }); !errors.Is(err, ErrInvalidReturnType) {
+		t.Fatalf("expected ErrInvalidReturnType for invalid nested natural struct, got %v", err)
 	}
 
 	if err := reg.Register("stringSlice", func() []string { return nil }); err != nil {
@@ -523,8 +567,8 @@ func TestRegisterReturnTypeChecker(t *testing.T) {
 		t.Fatalf("expected []*JSONPayload to pass, got %v", err)
 	}
 
-	if err := reg.Register("plainStructSlice", func() []PlainPayload { return nil }); !errors.Is(err, ErrInvalidReturnType) {
-		t.Fatalf("expected ErrInvalidReturnType for []PlainPayload, got %v", err)
+	if err := reg.Register("plainStructSlice", func() []PlainPayload { return nil }); err != nil {
+		t.Fatalf("expected []PlainPayload to pass as slice of natural structs, got %v", err)
 	}
 
 	if err := reg.Register("errorSlice", func() []error { return nil }); !errors.Is(err, ErrInvalidReturnType) {
@@ -535,6 +579,26 @@ func TestRegisterReturnTypeChecker(t *testing.T) {
 		t.Fatalf("expected map[string]string to pass, got %v", err)
 	}
 
+	if err := reg.Register("intMap", func() map[string]int64 { return nil }); err != nil {
+		t.Fatalf("expected map[string]int64 to pass, got %v", err)
+	}
+
+	if err := reg.Register("boolMap", func() map[string]bool { return nil }); err != nil {
+		t.Fatalf("expected map[string]bool to pass, got %v", err)
+	}
+
+	if err := reg.Register("floatMap", func() map[string]float64 { return nil }); err != nil {
+		t.Fatalf("expected map[string]float64 to pass, got %v", err)
+	}
+
+	if err := reg.Register("stringSliceMap", func() map[string][]string { return nil }); err != nil {
+		t.Fatalf("expected map[string][]string to pass, got %v", err)
+	}
+
+	if err := reg.Register("intSliceMap", func() map[string][]int32 { return nil }); err != nil {
+		t.Fatalf("expected map[string][]int32 to pass, got %v", err)
+	}
+
 	if err := reg.Register("jsonStructMap", func() map[string]JSONPayload { return nil }); err != nil {
 		t.Fatalf("expected map[string]JSONPayload to pass, got %v", err)
 	}
@@ -543,8 +607,16 @@ func TestRegisterReturnTypeChecker(t *testing.T) {
 		t.Fatalf("expected map[string]*JSONPayload to pass, got %v", err)
 	}
 
-	if err := reg.Register("plainStructMap", func() map[string]PlainPayload { return nil }); !errors.Is(err, ErrInvalidReturnType) {
-		t.Fatalf("expected ErrInvalidReturnType for map[string]PlainPayload, got %v", err)
+	if err := reg.Register("plainStructMap", func() map[string]PlainPayload { return nil }); err != nil {
+		t.Fatalf("expected map[string]PlainPayload to pass as map of natural structs, got %v", err)
+	}
+
+	if err := reg.Register("invalidNaturalStructSlice", func() []InvalidNaturalPayload { return nil }); !errors.Is(err, ErrInvalidReturnType) {
+		t.Fatalf("expected ErrInvalidReturnType for []InvalidNaturalPayload, got %v", err)
+	}
+
+	if err := reg.Register("invalidNaturalStructMap", func() map[string]InvalidNaturalPayload { return nil }); !errors.Is(err, ErrInvalidReturnType) {
+		t.Fatalf("expected ErrInvalidReturnType for map[string]InvalidNaturalPayload, got %v", err)
 	}
 
 	if err := reg.Register("errorMapValue", func() map[string]error { return nil }); !errors.Is(err, ErrInvalidReturnType) {
@@ -657,7 +729,7 @@ func TestRegistryListWithMetadataAndReceiverTypeFilter(t *testing.T) {
 	if got := bookItem.Metadata["name"]; got != "book-handler" {
 		t.Fatalf("expected metadata copy to preserve original value, got %v", got)
 	}
-	if bookItem.ReceiverType != reflect.TypeOf(&Book{}) {
+	if bookItem.ReceiverType != reflect.TypeFor[*Book]() {
 		t.Fatalf("expected receiver type *Book, got %v", bookItem.ReceiverType)
 	}
 
