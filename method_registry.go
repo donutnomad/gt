@@ -17,6 +17,7 @@ var (
 	ErrCallableAlreadyRegistered = errors.New("callable already registered")
 	ErrNilInstance               = errors.New("nil instance")
 	ErrInstanceAlreadyInjected   = errors.New("instance already injected")
+	ErrInstanceNotInjected       = errors.New("instance not injected")
 	ErrInvalidReturnType         = errors.New("invalid return type")
 	ErrCallableNotFound          = errors.New("callable not found")
 	ErrWrongArgumentCount        = errors.New("wrong argument count")
@@ -36,10 +37,9 @@ type CallableInfo struct {
 	OutputTypes  []reflect.Type
 }
 
-// MethodInfo stores information about a registered method and its associated instance.
+// MethodInfo stores information about a registered callable and its injection behavior.
 type MethodInfo struct {
 	method       reflect.Value
-	instance     reflect.Value
 	metadata     Metadata
 	receiverType reflect.Type
 	inputTypes   []reflect.Type
@@ -49,7 +49,7 @@ type MethodInfo struct {
 // Registry stores registered callables by name and injected instances.
 type Registry struct {
 	mu                sync.RWMutex
-	callables         map[string]*MethodInfo         // 存储方法信息，包括方法和关联的实例
+	callables         map[string]*MethodInfo         // 存储可调用对象信息和注入策略
 	instances         map[reflect.Type]reflect.Value // 按类型存储注入的实例对象
 	returnTypeChecker ReturnTypeChecker
 }
@@ -97,12 +97,9 @@ func (r *Registry) InjectInstance(instance any) error {
 // Any function value can be registered, including package functions, closures,
 // and method expressions such as (*Book).AddBook.
 //
-// If the callable's first parameter type matches an injected instance,
-// that instance is bound automatically during Execute and the caller does not
-// need to pass that first argument explicitly.
-//
-// Otherwise the callable is treated as a normal function and all parameters,
-// including the first one, must be provided by the caller.
+// If Execute is called with one fewer argument than the callable expects,
+// the missing first argument is resolved from injected instances by exact type.
+// When no matching instance exists, Execute returns ErrInstanceNotInjected.
 func (r *Registry) Register(name string, callable any, metadata ...Metadata) error {
 	if name == "" {
 		return fmt.Errorf("%w", ErrEmptyName)
@@ -127,7 +124,6 @@ func (r *Registry) Register(name string, callable any, metadata ...Metadata) err
 		}
 	}
 
-	var instance reflect.Value
 	var receiverType reflect.Type
 	inputTypes := make([]reflect.Type, callableVal.Type().NumIn())
 	for i := range inputTypes {
@@ -139,9 +135,6 @@ func (r *Registry) Register(name string, callable any, metadata ...Metadata) err
 	}
 	if callableVal.Type().NumIn() > 0 {
 		receiverType = callableVal.Type().In(0)
-		if injected, exists := r.instances[receiverType]; exists {
-			instance = injected
-		}
 	}
 
 	copiedMetadata := Metadata{}
@@ -151,7 +144,6 @@ func (r *Registry) Register(name string, callable any, metadata ...Metadata) err
 
 	r.callables[name] = &MethodInfo{
 		method:       callableVal,
-		instance:     instance,
 		metadata:     copiedMetadata,
 		receiverType: receiverType,
 		inputTypes:   inputTypes,
@@ -181,11 +173,10 @@ func getReflectValue(arg any) reflect.Value {
 	if arg == nil {
 		return reflect.Value{}
 	}
-	v := reflect.ValueOf(arg)
-	if v.Type() == reflect.TypeOf(reflect.Value{}) {
-		return v.Interface().(reflect.Value)
+	if rv, ok := arg.(reflect.Value); ok {
+		return rv
 	}
-	return v
+	return reflect.ValueOf(arg)
 }
 
 var byteSliceType = reflect.TypeOf([]byte(nil))
@@ -218,9 +209,8 @@ func adaptArgValue(arg reflect.Value, targetType reflect.Type) (reflect.Value, e
 	return reflect.Value{}, fmt.Errorf("cannot use argument of type %v as %v", arg.Type(), targetType)
 }
 
-// Execute calls the registered function/method by name with arguments.
-// For methods, it automatically uses the injected instance associated with the method.
-// For functions, no instance is used.
+// Execute calls the registered callable by name with arguments.
+// When the first argument is omitted, Execute resolves it from injected instances by exact type.
 // args can be either concrete values or reflect.Values.
 // Return values are converted from reflection values to plain Go values.
 func (r *Registry) Execute(name string, args ...any) ([]any, error) {
@@ -239,25 +229,22 @@ func (r *Registry) Execute(name string, args ...any) ([]any, error) {
 	}
 
 	var callArgs []reflect.Value
+	callArgs = argValues
 
-	// Check if this is a method (has associated instance)
-	if methodInfo.instance.IsValid() {
-		// This is a method - prepend the instance
-		callArgs = append([]reflect.Value{methodInfo.instance}, argValues...)
-	} else {
-		// This is a function - no instance needed
-		callArgs = argValues
+	if len(methodInfo.inputTypes) > 0 && len(argValues)+1 == len(methodInfo.inputTypes) {
+		instance, ok := r.injectedInstance(methodInfo.receiverType)
+		if !ok {
+			return nil, fmt.Errorf("%w: type %v", ErrInstanceNotInjected, methodInfo.receiverType)
+		}
+		callArgs = append([]reflect.Value{instance}, argValues...)
 	}
 
-	// Check argument count
-	methodType := methodInfo.method.Type()
-	expectedArgs := methodType.NumIn()
-	if len(callArgs) != expectedArgs {
-		return nil, fmt.Errorf("%w: expected %d, got %d", ErrWrongArgumentCount, expectedArgs, len(callArgs))
+	if len(callArgs) != len(methodInfo.inputTypes) {
+		return nil, fmt.Errorf("%w: expected %d, got %d", ErrWrongArgumentCount, len(methodInfo.inputTypes), len(callArgs))
 	}
 
 	for i := range callArgs {
-		adaptedArg, err := adaptArgValue(callArgs[i], methodType.In(i))
+		adaptedArg, err := adaptArgValue(callArgs[i], methodInfo.inputTypes[i])
 		if err != nil {
 			return nil, fmt.Errorf("%w: argument %d: %v", ErrArgumentAdaptation, i, err)
 		}
@@ -265,15 +252,20 @@ func (r *Registry) Execute(name string, args ...any) ([]any, error) {
 	}
 
 	var rawResults []reflect.Value
+	var panicValue any
 	func() {
 		defer func() {
 			if recovered := recover(); recovered != nil {
+				panicValue = recovered
 				rawResults = nil
 			}
 		}()
 		rawResults = methodInfo.method.Call(callArgs)
 	}()
 	if rawResults == nil {
+		if panicValue != nil {
+			return nil, fmt.Errorf("%w: callable %q panicked: %v", ErrExecutePanic, name, panicValue)
+		}
 		return nil, fmt.Errorf("%w: callable %q panicked", ErrExecutePanic, name)
 	}
 	results := make([]any, len(rawResults))
@@ -281,6 +273,24 @@ func (r *Registry) Execute(name string, args ...any) ([]any, error) {
 		results[i] = result.Interface()
 	}
 	return results, nil
+}
+
+func (r *Registry) injectedInstance(receiverType reflect.Type) (reflect.Value, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	if instance, ok := r.instances[receiverType]; ok {
+		return instance, true
+	}
+
+	if receiverType != nil && receiverType.Kind() != reflect.Ptr {
+		ptrType := reflect.PointerTo(receiverType)
+		if instance, ok := r.instances[ptrType]; ok {
+			return instance.Elem(), true
+		}
+	}
+
+	return reflect.Value{}, false
 }
 
 // MustExecute is like Execute but panics on error. Useful for initialization code.

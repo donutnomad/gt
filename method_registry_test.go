@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math/big"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -19,6 +20,10 @@ func (b *Book) AddBook(title, author string) string {
 	b.Title = title
 	b.Author = author
 	return "Book added: " + title + " by " + author
+}
+
+func (b Book) Describe(suffix string) string {
+	return b.Title + suffix
 }
 
 func AddBookFunc(title, author string) string {
@@ -429,7 +434,7 @@ func TestRegistryArgsUnmarshalJSONBytesOnTypeMismatch(t *testing.T) {
 	t.Fatalf("expected []byte JSON payload to be unmarshaled automatically, got error: %v", err)
 }
 
-func TestRegisterMethodExpressionWithoutInjectedInstanceActsAsFunction(t *testing.T) {
+func TestRegisterMethodExpressionWithoutInjectedInstanceAcceptsExplicitReceiver(t *testing.T) {
 	reg := NewRegistry()
 
 	if err := reg.Register("addBook", (*Book).AddBook); err != nil {
@@ -446,7 +451,32 @@ func TestRegisterMethodExpressionWithoutInjectedInstanceActsAsFunction(t *testin
 		t.Fatalf("expected %q, got %q", want, got)
 	}
 	if book.Title != "Dune" || book.Author != "Frank Herbert" {
-		t.Fatalf("expected receiver to be passed explicitly")
+		t.Fatalf("expected explicit receiver to be updated")
+	}
+}
+
+func TestRegisterMethodExpressionBeforeInjectUsesInjectedInstanceAtExecuteTime(t *testing.T) {
+	reg := NewRegistry()
+
+	if err := reg.Register("addBook", (*Book).AddBook); err != nil {
+		t.Fatal("Failed to register method expression:", err)
+	}
+
+	book := &Book{}
+	if err := reg.InjectInstance(book); err != nil {
+		t.Fatal("Failed to inject instance:", err)
+	}
+
+	results, err := reg.Execute("addBook", "Dune", "Frank Herbert")
+	if err != nil {
+		t.Fatal("Execute failed:", err)
+	}
+
+	if got, want := results[0].(string), "Book added: Dune by Frank Herbert"; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+	if book.Title != "Dune" || book.Author != "Frank Herbert" {
+		t.Fatalf("expected injected receiver to be updated")
 	}
 }
 
@@ -460,7 +490,10 @@ func TestExecuteReturnsSentinelErrors(t *testing.T) {
 	if err := reg.Register("twoArgs", func(a, b string) {}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reg.Execute("twoArgs", "only one"); !errors.Is(err, ErrWrongArgumentCount) {
+	if _, err := reg.Execute("twoArgs", "only one"); !errors.Is(err, ErrInstanceNotInjected) {
+		t.Fatalf("expected ErrInstanceNotInjected, got %v", err)
+	}
+	if _, err := reg.Execute("twoArgs"); !errors.Is(err, ErrWrongArgumentCount) {
 		t.Fatalf("expected ErrWrongArgumentCount, got %v", err)
 	}
 
@@ -469,6 +502,15 @@ func TestExecuteReturnsSentinelErrors(t *testing.T) {
 	}
 	if _, err := reg.Execute("needInt", "bad"); !errors.Is(err, ErrArgumentAdaptation) {
 		t.Fatalf("expected ErrArgumentAdaptation, got %v", err)
+	}
+
+	if err := reg.Register("needInjectedBook", func(b *Book, suffix string) string {
+		return b.Title + suffix
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Execute("needInjectedBook", "!"); !errors.Is(err, ErrInstanceNotInjected) {
+		t.Fatalf("expected ErrInstanceNotInjected, got %v", err)
 	}
 }
 
@@ -657,6 +699,28 @@ func TestRegisterAutoBindsFirstParameterWhenInjectedTypeMatches(t *testing.T) {
 	}
 }
 
+func TestRegisterBeforeInjectUsesInjectedInstanceAtExecuteTime(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register("describeBook", func(b *Book, suffix string) string {
+		return b.Title + suffix
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	book := &Book{Title: "late"}
+	if err := reg.InjectInstance(book); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := reg.Execute("describeBook", "!")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := results[0].(string), "late!"; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
+	}
+}
+
 func TestExecuteRecoversPanicsAsError(t *testing.T) {
 	reg := NewRegistry()
 	if err := reg.Register("panicString", func() string {
@@ -665,8 +729,32 @@ func TestExecuteRecoversPanicsAsError(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := reg.Execute("panicString"); !errors.Is(err, ErrExecutePanic) {
+	_, err := reg.Execute("panicString")
+	if !errors.Is(err, ErrExecutePanic) {
 		t.Fatalf("expected ErrExecutePanic, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Fatalf("expected panic detail in error, got %v", err)
+	}
+}
+
+func TestExecuteUsesPointerInjectionForValueReceiver(t *testing.T) {
+	reg := NewRegistry()
+	if err := reg.Register("describe", Book.Describe); err != nil {
+		t.Fatal(err)
+	}
+
+	book := &Book{Title: "pointer"}
+	if err := reg.InjectInstance(book); err != nil {
+		t.Fatal(err)
+	}
+
+	results, err := reg.Execute("describe", "!")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := results[0].(string), "pointer!"; got != want {
+		t.Fatalf("expected %q, got %q", want, got)
 	}
 }
 
