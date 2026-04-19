@@ -714,10 +714,15 @@ func TestRegistryListWithMetadataAndReceiverTypeFilter(t *testing.T) {
 	if err := reg.Register("noArgFn", func() string { return "ok" }); err != nil {
 		t.Fatal(err)
 	}
+	if err := reg.Register("sigFn", func(a string, b string) (int, error) {
+		return 0, nil
+	}, map[string]any{"name": "sig-handler"}); err != nil {
+		t.Fatal(err)
+	}
 
 	items := reg.List()
-	if len(items) != 3 {
-		t.Fatalf("expected 3 items, got %d", len(items))
+	if len(items) != 4 {
+		t.Fatalf("expected 4 items, got %d", len(items))
 	}
 
 	indexByName := make(map[string]CallableInfo, len(items))
@@ -732,6 +737,12 @@ func TestRegistryListWithMetadataAndReceiverTypeFilter(t *testing.T) {
 	if bookItem.ReceiverType != reflect.TypeFor[*Book]() {
 		t.Fatalf("expected receiver type *Book, got %v", bookItem.ReceiverType)
 	}
+	if len(bookItem.InputTypes) != 2 || bookItem.InputTypes[0] != reflect.TypeFor[*Book]() || bookItem.InputTypes[1] != reflect.TypeFor[string]() {
+		t.Fatalf("unexpected input types for bookFn: %v", bookItem.InputTypes)
+	}
+	if len(bookItem.OutputTypes) != 1 || bookItem.OutputTypes[0] != reflect.TypeFor[string]() {
+		t.Fatalf("unexpected output types for bookFn: %v", bookItem.OutputTypes)
+	}
 
 	noArgItem := indexByName["noArgFn"]
 	if noArgItem.ReceiverType != nil {
@@ -740,17 +751,31 @@ func TestRegistryListWithMetadataAndReceiverTypeFilter(t *testing.T) {
 	if len(noArgItem.Metadata) != 0 {
 		t.Fatalf("expected empty metadata for noArgFn, got %v", noArgItem.Metadata)
 	}
+	if len(noArgItem.InputTypes) != 0 {
+		t.Fatalf("expected no input types for noArgFn, got %v", noArgItem.InputTypes)
+	}
+	if len(noArgItem.OutputTypes) != 1 || noArgItem.OutputTypes[0] != reflect.TypeFor[string]() {
+		t.Fatalf("unexpected output types for noArgFn: %v", noArgItem.OutputTypes)
+	}
+
+	sigItem := indexByName["sigFn"]
+	if len(sigItem.InputTypes) != 2 || sigItem.InputTypes[0] != reflect.TypeFor[string]() || sigItem.InputTypes[1] != reflect.TypeFor[string]() {
+		t.Fatalf("unexpected input types for sigFn: %v", sigItem.InputTypes)
+	}
+	if len(sigItem.OutputTypes) != 2 || sigItem.OutputTypes[0] != reflect.TypeFor[int]() || sigItem.OutputTypes[1] != reflect.TypeFor[error]() {
+		t.Fatalf("unexpected output types for sigFn: %v", sigItem.OutputTypes)
+	}
 
 	filtered := reg.ListByReceiverTypes(&Book{}, "")
-	if len(filtered) != 2 {
-		t.Fatalf("expected 2 filtered items, got %d", len(filtered))
+	if len(filtered) != 3 {
+		t.Fatalf("expected 3 filtered items, got %d", len(filtered))
 	}
 
 	filteredNames := map[string]bool{}
 	for _, item := range filtered {
 		filteredNames[item.Name] = true
 	}
-	if !filteredNames["bookFn"] || !filteredNames["stringFn"] {
+	if !filteredNames["bookFn"] || !filteredNames["stringFn"] || !filteredNames["sigFn"] {
 		t.Fatalf("unexpected filtered result: %v", filteredNames)
 	}
 	if filteredNames["noArgFn"] {

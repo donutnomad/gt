@@ -32,6 +32,8 @@ type CallableInfo struct {
 	Name         string
 	Metadata     Metadata
 	ReceiverType reflect.Type
+	InputTypes   []reflect.Type
+	OutputTypes  []reflect.Type
 }
 
 // MethodInfo stores information about a registered method and its associated instance.
@@ -40,6 +42,8 @@ type MethodInfo struct {
 	instance     reflect.Value
 	metadata     Metadata
 	receiverType reflect.Type
+	inputTypes   []reflect.Type
+	outputTypes  []reflect.Type
 }
 
 // Registry stores registered callables by name and injected instances.
@@ -125,6 +129,14 @@ func (r *Registry) Register(name string, callable any, metadata ...Metadata) err
 
 	var instance reflect.Value
 	var receiverType reflect.Type
+	inputTypes := make([]reflect.Type, callableVal.Type().NumIn())
+	for i := range inputTypes {
+		inputTypes[i] = callableVal.Type().In(i)
+	}
+	outputTypes := make([]reflect.Type, callableVal.Type().NumOut())
+	for i := range outputTypes {
+		outputTypes[i] = callableVal.Type().Out(i)
+	}
 	if callableVal.Type().NumIn() > 0 {
 		receiverType = callableVal.Type().In(0)
 		if injected, exists := r.instances[receiverType]; exists {
@@ -142,8 +154,16 @@ func (r *Registry) Register(name string, callable any, metadata ...Metadata) err
 		instance:     instance,
 		metadata:     copiedMetadata,
 		receiverType: receiverType,
+		inputTypes:   inputTypes,
+		outputTypes:  outputTypes,
 	}
 	return nil
+}
+
+func cloneTypes(src []reflect.Type) []reflect.Type {
+	dst := make([]reflect.Type, len(src))
+	copy(dst, src)
+	return dst
 }
 
 func cloneMetadata(src Metadata) Metadata {
@@ -307,6 +327,8 @@ func (r *Registry) List() []CallableInfo {
 			Name:         name,
 			Metadata:     cloneMetadata(info.metadata),
 			ReceiverType: info.receiverType,
+			InputTypes:   cloneTypes(info.inputTypes),
+			OutputTypes:  cloneTypes(info.outputTypes),
 		})
 	}
 	return items
@@ -338,6 +360,8 @@ func (r *Registry) ListByReceiverTypes(values ...any) []CallableInfo {
 			Name:         name,
 			Metadata:     cloneMetadata(info.metadata),
 			ReceiverType: info.receiverType,
+			InputTypes:   cloneTypes(info.inputTypes),
+			OutputTypes:  cloneTypes(info.outputTypes),
 		})
 	}
 	return items
