@@ -448,6 +448,10 @@ func validateNaturalType(typ reflect.Type, visiting map[reflect.Type]bool) error
 		typ = typ.Elem()
 	}
 
+	if implementsJSONMarshaling(typ) {
+		return nil
+	}
+
 	switch typ.Kind() {
 	case reflect.Bool,
 		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,

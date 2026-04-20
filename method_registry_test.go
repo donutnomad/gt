@@ -244,6 +244,23 @@ type PlainPayload struct {
 	Value string
 }
 
+type OpaqueJSONDecimal struct {
+	raw string
+}
+
+func (d OpaqueJSONDecimal) MarshalJSON() ([]byte, error) {
+	return json.Marshal(d.raw)
+}
+
+func (d *OpaqueJSONDecimal) UnmarshalJSON(data []byte) error {
+	var out string
+	if err := json.Unmarshal(data, &out); err != nil {
+		return err
+	}
+	d.raw = out
+	return nil
+}
+
 type NestedNaturalPayload struct {
 	Label string
 	Flags []bool
@@ -254,6 +271,10 @@ type NaturalPayload struct {
 	Count  int
 	Scores []float64
 	Child  NestedNaturalPayload
+}
+
+type NaturalPayloadWithJSONField struct {
+	RequiredAmount OpaqueJSONDecimal `json:"required_amount"`
 }
 
 type InvalidNestedPayload struct {
@@ -583,6 +604,12 @@ func TestRegisterReturnTypeChecker(t *testing.T) {
 
 	if err := reg.Register("plainStruct2", func() PlainPayload { return PlainPayload{} }); err != nil {
 		t.Fatalf("expected PlainPayload to pass as natural struct, got %v", err)
+	}
+
+	if err := reg.Register("naturalStructWithJSONField", func() NaturalPayloadWithJSONField {
+		return NaturalPayloadWithJSONField{}
+	}); err != nil {
+		t.Fatalf("expected NaturalPayloadWithJSONField to pass because nested field implements JSON interfaces, got %v", err)
 	}
 
 	if err := reg.Register("naturalStruct", func() NaturalPayload { return NaturalPayload{} }); err != nil {
