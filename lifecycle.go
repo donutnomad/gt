@@ -31,11 +31,16 @@ type Lifecycle struct {
 	stopCh   chan struct{} // 内部：Stop 完成时 close，用于唤醒并发等待者
 }
 
-// Go 启动一个受管 goroutine。
-//   - 首次调用（或 Stop 后再次调用）开启新周期（新 ctx/wg/done）。
-//   - Stop 正在进行中时阻塞，直到 Stop 完成后开启新周期。
-//   - 内部自动捕获 panic 并记日志，不会影响其他 goroutine 或进程。
+// Go 启动一个受管 goroutine，等价于 GoCtx(context.Background(), fn)。
 func (lc *Lifecycle) Go(fn func(ctx context.Context)) {
+	lc.GoCtx(context.Background(), fn)
+}
+
+// GoCtx 与 Go 相同，但使用 parent 作为父 context。若 parent 为 nil，使用 context.Background()。
+func (lc *Lifecycle) GoCtx(parent context.Context, fn func(ctx context.Context)) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	lc.mu.Lock()
 	for lc.stopping {
 		stopCh := lc.stopCh
@@ -44,7 +49,7 @@ func (lc *Lifecycle) Go(fn func(ctx context.Context)) {
 		lc.mu.Lock()
 	}
 	if !lc.running {
-		lc.ctx, lc.cancel = context.WithCancel(context.Background())
+		lc.ctx, lc.cancel = context.WithCancel(parent)
 		lc.wg = new(sync.WaitGroup)
 		if lc.done == nil {
 			lc.done = make(chan struct{})
