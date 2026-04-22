@@ -25,6 +25,7 @@ go get github.com/donutnomad/gt
 | [Signal](#signal) | `signal.go` | 可反复触发的合并通知 |
 | [Lifecycle](#lifecycle) | `lifecycle.go` | goroutine 生命周期管理器 |
 | [BatchWriter](#batchwriter) | `batch_writer.go` | 并发安全的批量写入队列 |
+| [Scheduler](#scheduler) | `cron.go` | 基于时间轮的 cron 调度器 |
 | [CronTicker](#cronticker) | `ticker.go` | 对齐 Unix 零点的定时器 |
 | [Loop / TickRun / LoopRun](#loop--tickrun--looprun) | `loop.go` | 守护循环与定时调度 |
 | [工具函数](#工具函数) | `utils.go` | SleepCtx、Safe、TrySend/TryRecv 等 |
@@ -151,6 +152,65 @@ go bw.Write("c")
 - 如果 `writeFn` 未完整消费迭代器，返回 `ErrPartialConsume`
 - `Close` 后所有等待中的写入者立即收到 `ErrClosed`
 - 支持 `Close → Start` 重启，新旧生命周期完全隔离
+
+---
+
+## Scheduler
+
+基于秒级单层时间轮的 cron 调度器，支持 6 字段增强 cron 表达式（含秒）。
+
+```go
+ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+s := gt.NewScheduler(ctx)
+defer s.Stop()
+
+// 每 5 秒执行
+id, _ := s.Add("*/5 * * * * *", func(ctx context.Context) {
+    fmt.Println("tick", time.Now())
+})
+
+// 动态更新表达式
+s.Update(id, "0 0 9 * * *") // 改为每天 9:00:00
+
+// 移除任务
+s.Remove(id)
+```
+
+### Cron 表达式
+
+6 字段：`秒 分 时 日 月 周`
+
+| 语法 | 含义 | 示例 |
+|------|------|------|
+| `*` | 任意值 | `* * * * * *` 每秒 |
+| `N` | 精确值 | `0 0 9 * * *` 每天 9:00:00 |
+| `N-M` | 范围 | `0-30 * * * * *` 秒 0-30 |
+| `*/N` | 步长 | `*/5 * * * * *` 每 5 秒 |
+| `N-M/S` | 范围+步长 | `0-30/10 * * * * *` 秒 0,10,20,30 |
+| `N,M,...` | 列表 | `0,15,30,45 * * * * *` |
+
+字段取值范围：
+
+| 字段 | 范围 |
+|------|------|
+| 秒 | 0-59 |
+| 分 | 0-59 |
+| 时 | 0-23 |
+| 日 | 1-31 |
+| 月 | 1-12 |
+| 周 | 0-6（0=周日） |
+
+> **注意：day-of-month 与 day-of-week 使用 AND 语义。** 当两个字段都非 `*` 时，必须同时满足才会触发。例如 `0 0 9 15 * 1` 表示"每月 15 日且为周一的 9:00:00"，而非"每月 15 日或每周一"。这与传统 Vixie cron 的 OR 语义不同。
+
+### API
+
+- `NewScheduler(ctx)` — 创建并启动调度器，ctx 取消时自动停止
+- `Add(expr, fn)` — 添加任务，返回任务 ID
+- `Remove(id)` — 移除任务，ID 不存在时静默忽略
+- `Update(id, expr)` — 更新任务的 cron 表达式
+- `Stop()` — 停止调度器并等待正在执行的回调完成，幂等
 
 ---
 
