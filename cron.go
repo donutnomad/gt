@@ -218,6 +218,27 @@ func (s *Scheduler) Remove(id uint64) {
 	delete(s.jobs, id)
 }
 
+// Jobs 返回当前所有任务的 ID 列表。
+func (s *Scheduler) Jobs() []uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	ids := make([]uint64, 0, len(s.jobs))
+	for id := range s.jobs {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// Clear 移除所有任务。
+func (s *Scheduler) Clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, j := range s.jobs {
+		s.removeFromSlots(j)
+	}
+	clear(s.jobs)
+}
+
 // Update 更新任务的 cron 表达式。ID 不存在或解析失败返回 error。
 func (s *Scheduler) Update(id uint64, expr string) error {
 	e, err := parseCron(expr)
